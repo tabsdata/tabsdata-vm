@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tdtui"
+version = "0.1.0.0"                # bump
+description = "Interactive CLI for Tabsdata"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["tabsdata", "typer", "Rich", "Textual", "InquirerPy", "yaspin"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tdui*"]
+
+[project.scripts]
+tdtui = "tdtui.main:main"

@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/tdtui.egg-info/PKG-INFO
+src/tdtui.egg-info/SOURCES.txt
+src/tdtui.egg-info/dependency_links.txt
+src/tdtui.egg-info/entry_points.txt
+src/tdtui.egg-info/requires.txt
+src/tdtui.egg-info/top_level.txt
