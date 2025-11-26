@@ -143,7 +143,7 @@ class PortConfigScreen(Screen):
         else:
             self.status = "Not Running"
             self.external_port = "2457"
-            self.internal_port = "2457"
+            self.internal_port = "2458"
 
     def compose(self) -> ComposeResult:
         logging.info(self.virtual_size)
