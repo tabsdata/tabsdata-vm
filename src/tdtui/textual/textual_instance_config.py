@@ -142,8 +142,8 @@ class PortConfigScreen(Screen):
             self.status = instances["status"]
         else:
             self.status = "Not Running"
-            self.external_port = None
-            self.internal_port = None
+            self.external_port = "2457"
+            self.internal_port = "2457"
 
     def compose(self) -> ComposeResult:
         logging.info(self.virtual_size)
@@ -175,7 +175,7 @@ class PortConfigScreen(Screen):
         yield Footer()
 
     def set_visibility(self):
-        if self.instance_name is not None:
+        if self.instance_name is not None and self.instance_name != "_Create_Instance":
             self.selected_instance_name = self.instance_name
             # Instance already known: hide instance name input, start on ext port
             self.query_one("#instance-confirm", Label).display = False

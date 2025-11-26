@@ -51,6 +51,8 @@ class InstanceWidget(Static):
 
         if inst is not None and type(inst) == dict:
             pass
+        elif inst_name == "_Create_Instance" or inst == "_Create_Instance":
+            pass
         elif inst_name is not None:
             inst = [i for i in find_instances() if i["name"] == inst_name][0]
         elif hasattr(self.app, "instance_name"):
@@ -58,7 +60,11 @@ class InstanceWidget(Static):
                 0
             ]
 
-        if inst is None:
+        if (
+            inst is None
+            or inst_name == "_Create_Instance"
+            or inst == "_Create_Instance"
+        ):
             status = None
         else:
             name = inst.get("name", None)
@@ -231,6 +237,13 @@ class InstanceSelectionScreen(Screen):
             LabelItem(label=InstanceWidget(i), override_label=i.get("name"))
             for i in instances
         ]
+        instanceWidgets.insert(
+            0,
+            LabelItem(
+                label=InstanceWidget(inst_name="_Create_Instance"),
+                override_label="_Create_Instance",
+            ),
+        )
         with VerticalScroll():
             # self.list = ListView(*[LabelItem('a'), LabelItem('b')])
             self.list = ListView(*instanceWidgets)

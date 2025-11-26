@@ -13,7 +13,7 @@ def process_response(screen: Screen, label=None):
     app = screen.app
     screen_name = type(app.screen).__name__
     if label == "Instance Management":
-        app.push_screen("PortConfig")
+        pass
     if label == "Bind An Instance":
         app.push_screen("InstanceSelection")
     if screen_name == "InstanceSelectionScreen":
