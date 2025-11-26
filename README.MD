@@ -1,32 +1,27 @@
-# td-sync
+# tabsdata-tui
 
-A helper function that **registers/updates your Tabsdata functions** when you run your tabsdata .py function file
-
-Drop `sync_with_server()` into the bottom of any tabsdata function file. Every time your file runs, the function is registered or updated
+A CLI Utility that introduces a TUI (Terminal User Interface) for interacting with Tabsdata
 
 ---
 
 ## Install (from GitHub)
 
 ```bash
-pip install git+https://github.com/adaydan-tabsdata/td-sync.git
+pip install git+https://github.com/tabsdata/tabsdata-tui.git
 ```
 ---
 ### How to use 
 
-### 1. Import Package into your file
+### 2. Run the tdtui command
 
 ```bash
-from td_sync import sync_with_server
+tdtui
 ```
 
-### 2. Call the Function within your file
+The TUI allows for arrow based or mouse based navigation. 
 
-```bash
-sync_with_server()
-```
-
-The function takes a single parameter for  `collection_name`. If no collection name is provided, the function will prompt to select an existing collection or create a new one. 
+To go back a page within the TUI, use ctrl + b
+To exit the TUI, use ctrl + c OR click on the command pallet on the bottom right of the terminal and select "Quit the Application"
 
 
 
