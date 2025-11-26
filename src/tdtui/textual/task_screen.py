@@ -111,9 +111,11 @@ class SequentialTasksScreenTemplate(Screen):
         asyncio.create_task(self.run_tasks())
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
+        from tdtui.textual.textual_simple import GettingStartedScreen
+
         if event.button.id == "close-btn":
             active_screen = self.app.screen
-            self.app.push_screen("GettingStarted")
+            self.app.push_screen(GettingStartedScreen())
 
     def log_line(self, task: str | None, msg: str) -> None:
         if task:

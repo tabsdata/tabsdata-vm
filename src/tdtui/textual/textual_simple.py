@@ -151,7 +151,8 @@ class ScreenTemplate(Screen):
     def __init__(self, choices=None, id=None, header="Select an Option: "):
         super().__init__()
         self.choices = choices
-        self.id = id
+        if id is not None:
+            self.id = id
         self.header = header
 
     def compose(self) -> ComposeResult:
@@ -288,7 +289,6 @@ class GettingStartedScreen(ScreenTemplate):
     def __init__(self):
         super().__init__(
             choices=["Bind An Instance", "Help", "Exit"],
-            id="GettingStartedScreen",
             header="Welcome to Tabsdata. Select an Option to get started below",
         )
 
@@ -308,7 +308,6 @@ class NestedMenuApp(App):
         "main": MainScreen,
         "instancemanagement": InstanceManagementScreen,
         "PortConfig": lambda: PortConfigScreen(),
-        "GettingStarted": GettingStartedScreen,
         "InstanceSelection": InstanceSelectionScreen,
         "Overflow": OverflowScreen,
         "InstanceStartup": lambda: InstanceStartup(),
@@ -329,7 +328,7 @@ class NestedMenuApp(App):
 
     def on_mount(self) -> None:
         # start with a MainMenu instance
-        self.push_screen("GettingStarted")
+        self.push_screen(GettingStartedScreen())
 
     def action_go_back(self):
         logging.info(
