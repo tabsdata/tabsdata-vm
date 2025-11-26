@@ -79,6 +79,7 @@ def find_sockets(instance_name: str, pid=None):
             "cfg_int": cfg_int,
             "arg_ext": arg_ext,
             "arg_int": arg_int,
+            "status": status
         }
     else:
         # if no process, then not running
@@ -125,4 +126,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    x = main()
+    for i in x:
+        print(i)

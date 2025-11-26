@@ -4,3 +4,4 @@ Rich
 Textual
 InquirerPy
 yaspin
+psutil

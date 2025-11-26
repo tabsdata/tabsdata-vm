@@ -40,10 +40,9 @@ def make_instance_panel(inst: dict) -> Panel:
     )
 
 
-def display_instances_rich(instances: list[dict]) -> None:
-    if not instances:
-        console.print("[grey50]No instances found.[/grey50]")
-        return
+def display_instances_rich(instances=None) -> None:
+    if instances == None:
+        instances=find_instances()
 
     running_panels: list[Panel] = []
     stopped_panels: list[Panel] = []

@@ -6,13 +6,18 @@ def identify_instance_name_selection(instances=None):
     if instances == None:
         instances = find_instances()
     existing_instance_names = [i["name"] for i in instances]
+    print(existing_instance_names)
     instance_name = inquirer.text(
         message="Please provide a Name for your instance"
-    ).execute()
+    ).execute() 
+    if instance_name == "":
+        instance_name = "tabsdata"
     while instance_name in existing_instance_names:
         instance_name = inquirer.text(
             message="That name is already in use. Please choose another"
         ).execute()
+        if instance_name == "":
+            instance_name = "tabsdata"
     print("Thank you, using the name: " + instance_name)
     return instance_name
 
@@ -76,3 +81,4 @@ def validate_port_selections(instance, instances=None):
         ).execute()
     instance["external_port"] = external_port
     instance["internal_port"] = internal_port
+

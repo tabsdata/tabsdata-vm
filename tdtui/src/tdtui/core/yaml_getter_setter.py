@@ -22,8 +22,9 @@ def set_yaml_value(path, key, value, value_type):
             data[key] = [value]
         with open(path, "w") as f:
             yaml.safe_dump(data, f, sort_keys=False)
+        return f"Successfully set {value} on {key}"
     except:
-        return "None"
+        return f"Failed to set {value} on {key}"
 
 
 def get_process_arg(process, key):

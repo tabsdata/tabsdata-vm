@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: tdtui
-Version: 0.1.0.1
+Version: 0.1.0.2
 Summary: Interactive CLI for Tabsdata
 Requires-Python: >=3.12
 Description-Content-Type: text/markdown
@@ -10,6 +10,7 @@ Requires-Dist: Rich
 Requires-Dist: Textual
 Requires-Dist: InquirerPy
 Requires-Dist: yaspin
+Requires-Dist: psutil
 
 # td-sync
 

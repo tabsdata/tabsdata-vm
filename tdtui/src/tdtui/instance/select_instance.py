@@ -7,6 +7,13 @@ from tdtui.core.find_instances import main as find_instances
 
 import logging
 import os
+from pathlib import Path
+
+logging.basicConfig(
+    filename= Path.home() / "tabsdata-vm" / "log.log",
+    level=logging.INFO,
+    format="%(message)s"
+)
 
 
 class CreateCard(Static):
@@ -129,12 +136,15 @@ class InstanceSelector(App):
     }
     """
 
-    def __init__(self, instances=None):
+    def __init__(self, instances=None, existing_only=True):
         super().__init__()
         if instances is None:
             self.instances = find_instances()
         else:
             self.instances = instances
+        self.existing_only = existing_only
+        if len(self.instances) == 0:
+            self.existing_only = False
         self.cards: list[InstanceCard] = []
         self.index = 0
         self.selected: InstanceCard | None = None
@@ -145,19 +155,20 @@ class InstanceSelector(App):
 
     def on_mount(self) -> None:
         container = self.query_one("#list")
-
-        create_card = CreateCard()
-        self.cards.append(create_card)
-        container.mount(create_card)
+        if self.existing_only == False:
+            create_card = CreateCard()
+            self.cards.append(create_card)
+            container.mount(create_card)
 
         for inst in self.instances:
             card = InstanceCard(inst)
             self.cards.append(card)
             container.mount(card)
 
-        exit_card = ExitCard()
-        self.cards.append(exit_card)
-        container.mount(exit_card)
+        if self.existing_only == False:
+            exit_card = ExitCard()
+            self.cards.append(exit_card)
+            container.mount(exit_card)
 
         if self.cards:
             self.cards[0].is_selected = True
@@ -179,11 +190,17 @@ class InstanceSelector(App):
         self.cards[self.index].refresh()
 
     async def on_key(self, event: events.Key) -> None:
+        logging.info(event.key)
         if not self.cards:
             return
 
         if event.key in ["ctrl+c", "escape", "ctrl+q"]:
+            logging.info(event.key)
             await self.action_quit()
+            return
+        
+        if event.key ==  "escape":
+            self.action_quit()
             return
 
         key = event.key

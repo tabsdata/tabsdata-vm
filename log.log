@@ -1,3 +1,0 @@
-2025-11-14 14:15:07,949 [DEBUG] asyncio: Using selector: KqueueSelector
-2025-11-14 14:15:07,955 [DEBUG] tdtui: mount started
-2025-11-14 14:15:07,956 [DEBUG] tdtui: cards are [InstanceCard(classes='stopped'), InstanceCard(classes='running'), InstanceCard(classes='running')]

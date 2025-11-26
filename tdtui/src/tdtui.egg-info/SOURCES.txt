@@ -17,3 +17,10 @@ src/tdtui/instance/display_instances.py
 src/tdtui/instance/generate_instance_config.py
 src/tdtui/instance/instance_setters.py
 src/tdtui/instance/select_instance.py
+src/tdtui/textual/__init__.py
+src/tdtui/textual/api_processor.py
+src/tdtui/textual/screen_template.py
+src/tdtui/textual/test_footer.py
+src/tdtui/textual/textual_instance_config.py
+src/tdtui/textual/textual_main.py
+src/tdtui/textual/textual_simple.py
