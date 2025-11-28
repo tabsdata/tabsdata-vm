@@ -35,6 +35,7 @@ from textual.screen import Screen
 from textual.widgets import Input, Label, Static, Footer
 from textual.containers import Vertical, VerticalScroll
 from rich.text import Text
+from typing import Optional, Dict, List, Union
 
 from tdtui.core.find_instances import pull_all_tabsdata_instance_data as find_instances
 import logging

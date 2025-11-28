@@ -31,6 +31,10 @@ class TabsdataInstance:
             "arg_int": self.arg_int,
         }
 
+    @property
+    def is_running(self) -> bool:
+        return bool(self.status == "Running")
+
 
 def define_root(*parts):
     root = Path.home() / ".tabsdata"
