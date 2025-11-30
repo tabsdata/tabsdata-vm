@@ -6,34 +6,11 @@ from tdtui.core.yaml_getter_setter import (
 )
 import psutil
 from dataclasses import dataclass
+from tdtui.core.td_dataclasses import TabsdataInstance, FieldChange
 from pathlib import Path
 from typing import Optional, Dict, List, Union
-
-
-@dataclass
-class TabsdataInstance:
-    name: str
-    pid: Optional[str]
-    status: str
-    cfg_ext: Optional[str]
-    cfg_int: Optional[str]
-    arg_ext: Optional[str]
-    arg_int: Optional[str]
-
-    def to_dict(self) -> Dict[str, str | None]:
-        return {
-            "name": self.name,
-            "pid": self.pid,
-            "status": self.status,
-            "cfg_ext": self.cfg_ext,
-            "cfg_int": self.cfg_int,
-            "arg_ext": self.arg_ext,
-            "arg_int": self.arg_int,
-        }
-
-    @property
-    def is_running(self) -> bool:
-        return bool(self.status == "Running")
+from tdtui.core.models import Instance
+from tdtui.core.db import start_session
 
 
 def define_root(*parts):
@@ -139,14 +116,40 @@ def find_sockets(instance_name: str, pid=None):
     }
 
 
-def instance_name_to_tabsdata_instance(instance_name: str):
+def resync_app_instance_store(app):
+    instances = pull_all_tabsdata_instance_data()
+    app.instances = instances
+    return True
+
+
+def pull_all_tabsdata_instance_data(app) -> list[TabsdataInstance]:
+    instances: list[TabsdataInstance] = []
+    for name in find_tabsdata_instance_names():
+        pid = find_instance_pid(name)
+        sockets = find_sockets(name, pid)
+
+        instances.append(instance_name_to_instance(name))
+    return instances
+
+
+from tdtui.core.models import Instance as InstanceRow  # avoid name clash
+
+from tdtui.core.models import Instance  # ORM model
+
+
+def instance_name_to_instance(instance_name: str) -> Instance:
+    """
+    Build an Instance ORM object from filesystem state only.
+    Does NOT interact with the database.
+    """
     available_instances = find_tabsdata_instance_names()
     if instance_name not in available_instances:
         raise ValueError(f"No Tabsdata instance exists with name '{instance_name}'")
+
     pid = find_instance_pid(instance_name)
     sockets = find_sockets(instance_name, pid)
 
-    return TabsdataInstance(
+    return Instance(
         name=instance_name,
         pid=pid,
         status=sockets["status"],
@@ -157,31 +160,39 @@ def instance_name_to_tabsdata_instance(instance_name: str):
     )
 
 
-def pull_all_tabsdata_instance_data() -> list[TabsdataInstance]:
-    instances: list[TabsdataInstance] = []
-    for name in find_tabsdata_instance_names():
-        pid = find_instance_pid(name)
-        sockets = find_sockets(name, pid)
+def sync_filesystem_instances_to_db(app) -> list[Instance]:
+    """
+    Sync filesystem state into the DB using ORM models created by instance_name_to_instance.
+    Returns the ORM models from the DB after upsert.
+    """
+    instance_names = find_tabsdata_instance_names()
 
-        instances.append(instance_name_to_tabsdata_instance(name))
-    return instances
+    with app.session as session:
+        for name in instance_names:
+            # Instance from filesystem only
+            fs_instance = instance_name_to_instance(name)
 
+            # Try to find existing record in DB
+            db_instance = session.query(Instance).filter_by(name=name).first()
 
-def convert_instance_name_to_TabsdataInstance(
-    target: Union[str, TabsdataInstance],
-    all_instances: Optional[List[TabsdataInstance]] = None,
-) -> TabsdataInstance:
-    if all_instances is None:
-        all_instances = pull_all_tabsdata_instance_data()
+            if db_instance is None:
+                # Create if not found
+                session.add(fs_instance)
+            else:
+                # Update existing with latest filesystem values
+                db_instance.pid = fs_instance.pid
+                db_instance.status = fs_instance.status
+                db_instance.cfg_ext = fs_instance.cfg_ext
+                db_instance.cfg_int = fs_instance.cfg_int
+                db_instance.arg_ext = fs_instance.arg_ext
+                db_instance.arg_int = fs_instance.arg_int
 
-    if isinstance(target, TabsdataInstance):
-        pass
-    elif isinstance(target, str):
-        for inst in all_instances:
-            if inst.name == target:
-                target = inst
-                break
-    else:
-        raise TypeError(
-            f"Expected name to be a string or TabsdataInstance object, got {type(name).__name__}"
-        )
+        session.commit()
+
+        # Return database versions of instances
+        instances_in_db = session.query(Instance).order_by(Instance.name).all()
+
+    if app is not None:
+        app.instances = instances_in_db
+
+    return instances_in_db

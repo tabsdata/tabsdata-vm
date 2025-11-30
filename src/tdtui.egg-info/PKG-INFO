@@ -1,0 +1,43 @@
+Metadata-Version: 2.4
+Name: tdtui
+Version: 0.1.0.2
+Summary: Interactive CLI for Tabsdata
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: tabsdata
+Requires-Dist: typer
+Requires-Dist: Rich
+Requires-Dist: Textual
+Requires-Dist: InquirerPy
+Requires-Dist: yaspin
+Requires-Dist: psutil
+
+# tabsdata-tui
+
+A CLI Utility that introduces a TUI (Terminal User Interface) for interacting with Tabsdata
+
+---
+
+## Install (from GitHub)
+
+```bash
+pip install git+https://github.com/tabsdata/tabsdata-tui.git
+```
+---
+### How to use 
+
+### 2. Run the tdtui command
+
+```bash
+tdtui
+```
+
+The TUI allows for arrow based or mouse based navigation. 
+
+To go back a page within the TUI, use ctrl + b
+To exit the TUI, use ctrl + c OR click on the command pallet on the bottom right of the terminal and select "Quit the Application"
+
+
+
+
+

@@ -1,0 +1,2 @@
+[console_scripts]
+tdtui = tdtui.textual.textual_simple:run_app

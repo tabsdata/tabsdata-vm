@@ -25,6 +25,7 @@ from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
+from tdtui.core.db import start_session
 
 logging.basicConfig(
     filename=Path.home() / "tabsdata-vm" / "log.log",
@@ -44,13 +45,6 @@ class NestedMenuApp(App):
         overflow-y: hidden;
     }
     """
-    SCREENS = {
-        "main": MainScreen,
-        "instancemanagement": InstanceManagementScreen,
-        "PortConfig": lambda: PortConfigScreen(),
-        "Overflow": OverflowScreen,
-        "InstanceStartup": lambda: InstanceStartup(),
-    }
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+b", "go_back", "Go Back"),
@@ -58,13 +52,7 @@ class NestedMenuApp(App):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Dictionary Modified when configuring
-        self.instance_start_configuration = {
-            "name": None,
-            "external_port": None,
-            "internal_port": None,
-            "status": "Not Running",
-        }
+        self.session = start_session()
 
     def on_mount(self) -> None:
         # start with a MainMenu instance

@@ -7,6 +7,7 @@ from tdtui.core.find_instances import pull_all_tabsdata_instance_data as find_in
 import logging
 from typing import Optional, Dict, Any, List
 from textual.containers import VerticalScroll
+from dataclasses import dataclass
 
 from textual.widgets import Static
 
@@ -190,55 +191,6 @@ class ScreenTemplate(Screen):
         selected = event.item.label
         logging.info(type(self.screen).__name__)
         process_response(self, selected)  # push instance
-
-
-class OverflowScreen(Screen):
-
-    CSS = """
-    Screen {
-        background: $background;
-        color: black;
-    }
-
-    VerticalScroll {
-        width: 1fr;
-    }
-
-    Static {
-        margin: 1 2;
-        background: green 80%;
-        border: green wide;
-        color: white 90%;
-        height: auto;
-    }
-
-    #right {
-        overflow-y: hidden;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        TEXT = """I must not fear.
-        Fear is the mind-killer.
-        Fear is the little-death that brings total obliteration.
-        I will face my fear.
-        I will permit it to pass over me and through me.
-        And when it has gone past, I will turn the inner eye to see its path.
-        Where the fear has gone there will be nothing. Only I will remain."""
-        yield Horizontal(
-            VerticalScroll(
-                Static(TEXT),
-                Static(TEXT),
-                Static(TEXT),
-                id="left",
-            ),
-            VerticalScroll(
-                Static(TEXT),
-                Static(TEXT),
-                Static(TEXT),
-                id="right",
-            ),
-        )
 
 
 class InstanceSelectionScreen(Screen):
