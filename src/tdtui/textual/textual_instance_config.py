@@ -30,15 +30,14 @@ def validate_port(port_str: str) -> bool:
     return 1 <= port <= 65535
 
 
-def get_running_ports() -> List[Dict[str, Any]]:
+def get_running_ports(screen) -> List[Dict[str, Any]]:
     """
     Python equivalent of get_running_ports() from bash.
 
     Returns a list of dicts for running instances, each with:
       name, status, external_port, internal_port
     """
-    instances = find_instances()
-    running = []
+    instances
 
     for inst in instances:
         status = inst.get("status")

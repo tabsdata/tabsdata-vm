@@ -116,12 +116,6 @@ def find_sockets(instance_name: str, pid=None):
     }
 
 
-def resync_app_instance_store(app):
-    instances = pull_all_tabsdata_instance_data()
-    app.instances = instances
-    return True
-
-
 def pull_all_tabsdata_instance_data(app) -> list[TabsdataInstance]:
     instances: list[TabsdataInstance] = []
     for name in find_tabsdata_instance_names():
@@ -167,7 +161,7 @@ def sync_filesystem_instances_to_db(app) -> list[Instance]:
     """
     instance_names = find_tabsdata_instance_names()
 
-    with app.session as session:
+    with app as session:
         for name in instance_names:
             # Instance from filesystem only
             fs_instance = instance_name_to_instance(name)
@@ -192,7 +186,29 @@ def sync_filesystem_instances_to_db(app) -> list[Instance]:
         # Return database versions of instances
         instances_in_db = session.query(Instance).order_by(Instance.name).all()
 
-    if app is not None:
-        app.instances = instances_in_db
-
     return instances_in_db
+
+
+from sqlalchemy import and_, or_
+
+
+def query_session(session, model, limit=None, *conditions, **filters):
+    query = session.query(model)
+    if filters:
+        query = query.filter_by(**filters)
+    if conditions:
+        query = query.filter(*conditions)
+
+    if limit is not None:
+        query = query.limit(limit)
+
+    return query.all()
+
+
+from tdtui.core.db import start_session
+
+session = start_session()
+sync_filesystem_instances_to_db(session)
+x = query_session(session, Instance, status="Running")
+for inst in x:
+    print({c.name: getattr(inst, c.name) for c in inst.__table__.columns})
