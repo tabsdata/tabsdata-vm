@@ -11,10 +11,10 @@ def start_session():
     session = SessionLocal()
     Base.metadata.create_all(engine)
     sync_filesystem_instances_to_db(session=session)
-    return session
+    return session, Base
 
 
 session = start_session()
-x = query_session(session, Instance)
+x = query_session(session[0], Instance)
 for inst in x:
     print({c.name: getattr(inst, c.name) for c in inst.__table__.columns})

@@ -115,7 +115,7 @@ def find_sockets(instance_name: str, pid=None):
     }
 
 
-def pull_all_tabsdata_instance_data(app) -> list[TabsdataInstance]:
+def pull_all_tabsdata_instance_data() -> list[TabsdataInstance]:
     instances: list[TabsdataInstance] = []
     for name in find_tabsdata_instance_names():
         pid = find_instance_pid(name)
@@ -137,10 +137,16 @@ def instance_name_to_instance(instance_name: str) -> Instance:
     """
     available_instances = find_tabsdata_instance_names()
     if instance_name not in available_instances:
-        raise ValueError(f"No Tabsdata instance exists with name '{instance_name}'")
+        return Instance(name=instance_name)
 
     pid = find_instance_pid(instance_name)
     sockets = find_sockets(instance_name, pid)
+    split_public_socket = sockets["arg_ext"].split(":")
+    split_private_socket = sockets["arg_int"].split(":")
+    public_ip = split_public_socket[0]
+    public_port = split_public_socket[-1]
+    private_ip = split_private_socket[0]
+    private_port = split_private_socket[-1]
 
     return Instance(
         name=instance_name,
@@ -148,8 +154,10 @@ def instance_name_to_instance(instance_name: str) -> Instance:
         status=sockets["status"],
         cfg_ext=sockets["cfg_ext"],
         cfg_int=sockets["cfg_int"],
-        arg_ext=sockets["arg_ext"],
-        arg_int=sockets["arg_int"],
+        arg_ext=public_port,
+        arg_int=private_port,
+        public_ip=public_ip,
+        private_ip=private_ip,
     )
 
 
@@ -211,6 +219,9 @@ def query_session(session, model, limit=None, *conditions, **filters):
 
     if limit is not None:
         query = query.limit(limit)
+
+    if query.all() == []:
+        return None
 
     return query.all()
 

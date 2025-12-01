@@ -4,7 +4,10 @@ from textual.screen import Screen
 from textual.widgets import ListView, ListItem, Label, Static
 from pathlib import Path
 
-from tdtui.core.find_instances import pull_all_tabsdata_instance_data as find_instances
+from tdtui.core.find_instances import (
+    pull_all_tabsdata_instance_data,
+    instance_name_to_instance,
+)
 import logging
 from typing import Optional, Dict, Any, List
 from textual.containers import VerticalScroll
@@ -36,9 +39,17 @@ from textual.containers import Vertical, VerticalScroll
 from rich.text import Text
 from typing import Optional, Dict, List, Union
 
-from tdtui.core.find_instances import pull_all_tabsdata_instance_data as find_instances
+from tdtui.core.find_instances import (
+    pull_all_tabsdata_instance_data as pull_all_tabsdata_instance_data,
+)
 import logging
 from pathlib import Path
+from tdtui.textual_assets.textual_instance_config import (
+    name_in_use,
+    port_in_use,
+    get_running_ports,
+    validate_port,
+)
 
 logging.basicConfig(
     filename=Path.home() / "tabsdata-vm" / "log.log",
@@ -50,63 +61,34 @@ logging.basicConfig(
 class InstanceWidget(Static):
     """Rich panel showing the current working instance."""
 
-    def __init__(self, inst: Optional[str] = None, inst_name=None):
+    def __init__(self, inst: Optional[str] = None):
         super().__init__()
         self.inst = inst
-        self.inst_name = inst_name
 
     def _make_instance_panel(self) -> Panel:
 
         inst = self.inst
-        inst_name = self.inst_name
-        # inst --> inst_name --> app attr
 
-        if inst is not None and type(inst) == dict:
-            pass
-        elif inst_name == "_Create_Instance" or inst == "_Create_Instance":
-            pass
-        elif inst_name is not None:
-            inst = [i for i in find_instances() if i["name"] == inst_name][0]
-        elif hasattr(self.app, "instance_name"):
-            inst = [i for i in find_instances() if i["name"] == self.app.instance_name][
-                0
-            ]
-
-        if (
-            inst is None
-            or inst_name == "_Create_Instance"
-            or inst == "_Create_Instance"
-        ):
-            status = None
-        else:
-            name = inst.get("name", None)
-            status = inst.get("status", None)
-            cfg_ext = inst.get("cfg_ext", None)
-            cfg_int = inst.get("cfg_int", None)
-            arg_ext = inst.get("arg_ext", None)
-            arg_int = inst.get("arg_int", None)
-        if inst_name == "_Create_Instance":
-            status_color = "#1F66D1"
-            status_line = f"Create a New Instance"
-            line1 = f""
-            line2 = f""
-            self.app.instance_start_configuration["status"] = "Running"
-        elif status == "Running":
-            status_color = "#22c55e"
-            status_line = f"{name}  ● Running"
-            line1 = f"running on → ext: {arg_ext}"
-            line2 = f"running on → int: {arg_int}"
-            self.app.instance_start_configuration["status"] = "Running"
-        elif status is None:
+        if inst is None:
             status_color = "#e4e4e6"
             status_line = f"○ No Instance Selected"
             line1 = f"No External Running Port"
             line2 = f"No Internal Running Port"
-        else:
+        elif inst == "_Create_Instance":
+            status_color = "#1F66D1"
+            status_line = f"Create a New Instance"
+            line1 = f""
+            line2 = f""
+        elif inst.status == "Running":
+            status_color = "#22c55e"
+            status_line = f"{inst.name}  ● Running"
+            line1 = f"running on → ext: {inst.arg_ext}"
+            line2 = f"running on → int: {inst.arg_int}"
+        elif inst.status == "Not Running":
             status_color = "#ef4444"
-            status_line = f"{name}  ○ Not running"
-            line1 = f"configured on → ext: {cfg_ext}"
-            line2 = f"configured on → int: {cfg_int}"
+            status_line = f"{inst.name}  ○ Not running"
+            line1 = f"configured on → ext: {inst.cfg_ext}"
+            line2 = f"configured on → int: {inst.cfg_int}"
 
         header = Text(status_line, style=f"bold {status_color}")
         body = Text(f"{line1}\n{line2}", style="#f9f9f9")
@@ -167,12 +149,10 @@ class ScreenTemplate(Screen):
         self.header = header
 
     def compose(self) -> ComposeResult:
-        instance = self.app.instance_start_configuration.get("name")
-        logging.info(f"instance chosen is {instance} at type {type(instance)}")
         with VerticalScroll():
             if self.header is not None:
                 yield Label(self.header, id="listHeader")
-            yield CurrentInstanceWidget(inst_name=instance)
+            yield CurrentInstanceWidget()
             choiceLabels = [LabelItem(i) for i in self.choices]
             self.list = ListView(*choiceLabels)
             yield self.list
@@ -194,15 +174,14 @@ class InstanceSelectionScreen(Screen):
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        instances = find_instances()
+        instances = pull_all_tabsdata_instance_data()
         instanceWidgets = [
-            LabelItem(label=InstanceWidget(i), override_label=i.get("name"))
-            for i in instances
+            LabelItem(label=InstanceWidget(i), override_label=i.name) for i in instances
         ]
         instanceWidgets.insert(
             0,
             LabelItem(
-                label=InstanceWidget(inst_name="_Create_Instance"),
+                label=InstanceWidget(inst="_Create_Instance"),
                 override_label="_Create_Instance",
             ),
         )
@@ -280,33 +259,34 @@ class PortConfigScreen(Screen):
     }
     """
 
-    def __init__(self, instance_name: Optional[str] = None) -> None:
+    def __init__(self, instance=None) -> None:
         super().__init__()
-        if instance_name is not None:
-            self.instance_name = instance_name
+        if instance is None:
+            try:
+                instance = self.app.app_query_session(
+                    "instances", limit=1, working=True
+                )[0]
+            except:
+                raise TypeError(f"No Instance provided and no cached working instance")
+        elif instance == "_Create_Instance":
+            instance = instance_name_to_instance(instance)
+        elif type(instance) == str:
+            try:
+                instance = self.app.app_query_session(
+                    "instances", limit=1, name=instance
+                )[0]
+            except:
+                raise TypeError(f"Instance Name not found")
         else:
-            self.instance_name = self.app.instance_name
-        self.selected_instance_name: Optional[str] = instance_name
+            pass
 
-        instances = [i for i in find_instances() if i["name"] == self.instance_name]
-        if len(instances) > 0:
-            instances = instances[0]
-            self.external_port = instances["arg_ext"].split(":")[-1]
-            self.internal_port = instances["arg_int"].split(":")[-1]
-            self.status = instances["status"]
-        else:
-            self.status = "Not Running"
-            self.external_port = "2457"
-            self.internal_port = "2458"
+        self.instance = instance
 
     def compose(self) -> ComposeResult:
         logging.info(self.virtual_size)
 
-        # import here to avoid circulars if needed
-        from tdtui.app_start import CurrentInstanceWidget
-
         yield VerticalScroll(
-            CurrentInstanceWidget(self.instance_name),
+            CurrentInstanceWidget(self.instance),
             Label(
                 "What Would Like to call your Tabsdata Instance:",
                 id="title-instance",
@@ -316,11 +296,11 @@ class PortConfigScreen(Screen):
             Label("", id="instance-confirm"),
             Label("Configure Tabsdata ports", id="title"),
             Label("External port:", id="ext-label"),
-            Input(placeholder=self.external_port, id="ext-input"),
+            Input(placeholder=self.instance.arg_ext, id="ext-input"),
             Label("", id="ext-error"),
             Label("", id="ext-confirm"),
             Label("Internal port:", id="int-label"),
-            Input(placeholder=self.internal_port, id="int-input"),
+            Input(placeholder=self.instance.arg_int, id="int-input"),
             Label("", id="int-error"),
             Label("", id="int-confirm"),
             Static(""),
@@ -329,8 +309,7 @@ class PortConfigScreen(Screen):
         yield Footer()
 
     def set_visibility(self):
-        if self.instance_name is not None and self.instance_name != "_Create_Instance":
-            self.selected_instance_name = self.instance_name
+        if self.instance is not None and self.instance.name != "_Create_Instance":
             # Instance already known: hide instance name input, start on ext port
             self.query_one("#instance-confirm", Label).display = False
             self.query_one("#instance-error", Label).display = False
@@ -381,7 +360,7 @@ class PortConfigScreen(Screen):
 
         value = ext_input.value.strip()
         if value == "":
-            value = self.external_port
+            value = self.instance.arg_ext
 
         if not validate_port(value):
             ext_error.update("That is not a valid port number. Please enter 1–65535.")
@@ -390,7 +369,7 @@ class PortConfigScreen(Screen):
             return
 
         port = int(value)
-        in_use_by = port_in_use(port, current_instance_name=self.instance_name)
+        in_use_by = port_in_use(port, current_instance_name=self.instance.name)
 
         if in_use_by is not None:
             ext_error.update(
@@ -402,7 +381,7 @@ class PortConfigScreen(Screen):
             return
 
         # Valid and free
-        self.external_port = port
+        self.instance.arg_ext = port
         ext_confirm.update(
             Text(f"Selected external port: {port}", style="bold #22c55e")
         )
@@ -437,7 +416,7 @@ class PortConfigScreen(Screen):
             return
 
         # Valid and free
-        self.selected_instance_name = value
+        self.instance.name = value
         instance_confirm.update(
             Text(
                 f"Defined an Instance with the following Name: {value}",
@@ -467,7 +446,7 @@ class PortConfigScreen(Screen):
 
         value = int_input.value.strip()
         if value == "":
-            value = self.internal_port
+            value = self.instance.arg_int
 
         if not validate_port(value):
             int_error.update("That is not a valid port number. Please enter 1–65535.")
@@ -478,7 +457,7 @@ class PortConfigScreen(Screen):
         port = int(value)
 
         # Must not match external
-        if self.external_port is not None and port == self.external_port:
+        if self.instance.arg_ext is not None and port == self.instance.arg_ext:
             int_error.update(
                 "Internal port must not be the same as external port. "
                 "Please choose another port."
@@ -487,7 +466,7 @@ class PortConfigScreen(Screen):
             int_input.clear()
             return
 
-        in_use_by = port_in_use(port, current_instance_name=self.instance_name)
+        in_use_by = port_in_use(port, current_instance_name=self.instance.name)
 
         if in_use_by is not None:
             int_error.update(
@@ -499,22 +478,13 @@ class PortConfigScreen(Screen):
             return
 
         # Valid, distinct, and free
-        self.internal_port = port
+        self.instance.arg_int = port
         int_confirm.update(
             Text(f"Selected internal port: {port}", style="bold #22c55e")
         )
 
         # Store result on the app
-        app = self.app
-        app.selected_instance_name = self.selected_instance_name
-        app.selected_external_port = self.external_port
-        app.selected_internal_port = self.internal_port
-        app.instance_start_configuration["name"] = self.selected_instance_name
-        app.instance_start_configuration["external_port"] = self.external_port
-        app.instance_start_configuration["internal_port"] = self.internal_port
-        app.instance_start_configuration["status"] = self.status
-        logging.info(app.instance_start_configuration)
-        self.app.handle_api_response(self)
+        self.app.handle_api_response(self, self.instance)
 
 
 @dataclass
@@ -646,8 +616,8 @@ class SequentialTasksScreenTemplate(Screen):
         await self.mount(Button("Done", id="close-btn"), before=footer)
 
 
-class TaskScreen(SequentialTasksScreenTemplate):
-    def __init__(self) -> None:
+class InstanceStartupTask(SequentialTasksScreenTemplate):
+    def __init__(self, instance) -> None:
         tasks = [
             TaskSpec("Preparing Instance", self.prepare_instance),
             TaskSpec("Binding Ports", self.bind_ports),
@@ -660,9 +630,9 @@ class TaskScreen(SequentialTasksScreenTemplate):
         #     "internal_port": 2458,
         #     "status": "Running",
         # }
-        self.instance_name = self.app.instance_start_configuration["name"]
-        self.ext_port = self.app.instance_start_configuration["external_port"]
-        self.int_port = self.app.instance_start_configuration["internal_port"]
+        self.instance_name = instance.name
+        self.ext_port = instance.arg_ext
+        self.int_port = instance.arg_int
         super().__init__(tasks)
 
     async def prepare_instance(self, label=None):
@@ -671,7 +641,7 @@ class TaskScreen(SequentialTasksScreenTemplate):
         logging.info(
             f"c: {[
             i["name"]
-            for i in find_instances()
+            for i in pull_all_tabsdata_instance_data()
             if i["name"] == self.app.instance_start_configuration["name"]
         ]}"
         )
@@ -687,7 +657,7 @@ class TaskScreen(SequentialTasksScreenTemplate):
             )
         elif self.app.instance_start_configuration["name"] not in [
             i["name"]
-            for i in find_instances()
+            for i in pull_all_tabsdata_instance_data()
             if i["name"] == self.app.instance_start_configuration["name"]
         ]:
             self.log_line(label, "START SERVER")

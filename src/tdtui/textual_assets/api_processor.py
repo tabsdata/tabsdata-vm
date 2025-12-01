@@ -9,7 +9,7 @@ from textual.binding import Binding
 from textual.widgets import Footer
 from tdtui.textual_assets.textual_screens import (
     PortConfigScreen,
-    TaskScreen,
+    InstanceStartupTask,
     GettingStartedScreen,
     InstanceManagementScreen,
     MainScreen,
@@ -29,9 +29,9 @@ def process_response(screen: Screen, label=None):
         app.push_screen(InstanceSelectionScreen())
     elif screen_name == "InstanceSelectionScreen":
         app.instance_name = label
-        app.push_screen(PortConfigScreen())
+        app.push_screen(PortConfigScreen(label))
     elif screen_name == "PortConfigScreen":
-        app.push_screen(InstanceStartup())
+        app.push_screen(InstanceStartupTask(label))
     elif screen_name == "GettingStartedScreen" and label == "Exit":
         app.exit()
     return

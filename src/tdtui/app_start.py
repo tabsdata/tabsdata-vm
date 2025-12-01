@@ -3,7 +3,9 @@ from textual.screen import Screen
 from textual.widgets import ListView, ListItem, Label, Static
 from pathlib import Path
 from tdtui.textual_assets.api_processor import process_response
-from tdtui.core.find_instances import pull_all_tabsdata_instance_data as find_instances
+from tdtui.core.find_instances import (
+    pull_all_tabsdata_instance_data as pull_all_tabsdata_instance_data,
+)
 import logging
 from typing import Optional, Dict, Any, List
 from textual.containers import VerticalScroll
@@ -26,10 +28,10 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 from tdtui.core.db import start_session
 from tdtui.core.find_instances import query_session
-from tdtui.core.models import Instance
+from tdtui.core.models import Instance, get_model_by_tablename
 
 logging.basicConfig(
-    filename=Path.home() / "test-tui" / "tabsdata-tui" / "log.log",
+    filename="/Users/danieladayev/test-tui/tabsdata-tui/logger.log",
     level=logging.INFO,
     format="%(message)s",
 )
@@ -53,7 +55,7 @@ class NestedMenuApp(App):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.session = start_session()
+        self.session = start_session()[0]
         instance = query_session(self.session, Instance)
         for inst in instance:
             logging.info(
@@ -70,6 +72,12 @@ class NestedMenuApp(App):
 
     def handle_api_response(self, screen: Screen, label: str | None = None) -> None:
         process_response(screen, label)
+
+    def app_query_session(self, model, limit=None, *conditions, **filters):
+        model = get_model_by_tablename(model)
+        session = self.session
+        query = query_session(session, model, limit, *conditions, **filters)
+        return query
 
 
 def run_app():
