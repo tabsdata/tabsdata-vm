@@ -6,6 +6,7 @@ from pathlib import Path
 from tdtui.textual_assets.spinners import SpinnerWidget
 from typing import Awaitable, Callable, List
 from textual.widgets import RichLog
+from textual.containers import Center
 
 from tdtui.core.find_instances import (
     sync_filesystem_instances_to_db,
@@ -49,6 +50,7 @@ import asyncio.subprocess
 import random
 import asyncio
 from tdtui.core.yaml_getter_setter import get_yaml_value, set_yaml_value
+from functools import partial
 
 from tdtui.core.find_instances import (
     sync_filesystem_instances_to_db as sync_filesystem_instances_to_db,
@@ -61,6 +63,100 @@ from tdtui.textual_assets.textual_instance_config import (
     get_running_ports,
     validate_port,
 )
+
+
+from textual.app import ComposeResult
+from textual.screen import Screen
+from textual.widgets import Static
+
+
+from textual.app import ComposeResult
+from textual.screen import Screen
+from textual.widgets import Static, Button
+from textual.containers import Horizontal, Vertical
+
+
+class BSOD(Screen):
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Back"),
+        ("left", "focus_back", "Focus Back"),
+        ("right", "focus_exit", "Focus Exit"),
+    ]
+
+    CSS = """
+    BSOD {
+        background: blue;
+        color: white;
+        align: center middle;
+    }
+
+    #wrapper {
+        width: 80;
+        align: center middle;
+    }
+
+    #title {
+        content-align: center middle;
+        text-style: reverse;
+        margin-bottom: 1;
+    }
+
+    #spinner {
+        content-align: center middle;
+        align: center middle;
+    }
+
+    #message {
+        content-align: center middle;
+        margin-bottom: 1;
+    }
+
+    #buttons {
+        align: center middle;
+        height: 3;
+    }
+
+    Button {
+        margin: 0 2;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ERROR_TEXT = (
+            "uh-oh, you've stumbled upon something Daniel hasn't built out yet :("
+        )
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="wrapper"):
+            yield Static(" Bad News :() ", id="title")
+
+            # ✅ ONE SINGLE EMOJI, CENTERED
+            yield Horizontal(Center(SpinnerWidget("material", id="spinner")))
+
+            yield Static(self.ERROR_TEXT, id="message")
+
+            with Horizontal(id="buttons"):
+                yield Button("Back", id="back-btn")
+                yield Button("Exit", id="exit-btn")
+
+    def on_mount(self) -> None:
+        self.query_one("#back-btn", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "back-btn":
+            self.app.pop_screen()
+        elif event.button.id == "exit-btn":
+            self.app.exit()
+
+    def action_focus_back(self) -> None:
+        self.query_one("#back-btn", Button).focus()
+
+    def action_focus_exit(self) -> None:
+        self.query_one("#exit-btn", Button).focus()
+
+
+from tdtui.core import instance_tasks
 
 logging.basicConfig(
     filename="/Users/danieladayev/test-tui/tabsdata-tui/logger.log",
@@ -210,7 +306,9 @@ class InstanceSelectionScreen(Screen):
             self.instances = instances
 
     def compose(self) -> ComposeResult:
-        instances = sync_filesystem_instances_to_db(self.app)
+        instances = self.instances
+        if len(instances) == 1:
+            instances = [instances]
         instanceWidgets = [
             LabelItem(label=InstanceWidget(i), override_label=i.name) for i in instances
         ]
@@ -236,7 +334,6 @@ class InstanceSelectionScreen(Screen):
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         selected = event.item.label
-        logging.info(type(self.screen).__name__)
         self.app.handle_api_response(self, selected)  # push instance
 
 
@@ -251,26 +348,16 @@ class MainScreen(ScreenTemplate):
                 "Config Management",
                 "Exit",
             ],
-            id="MainScreen",
         )
 
 
 class InstanceManagementScreen(ScreenTemplate):
     def __init__(self):
         super().__init__(
-            choices=["Start an Instance", "Stop an Instance", "Set Working Instance"],
-            id="InstanceManagementScreen",
-        )
-
-
-class GettingStartedScreen(ScreenTemplate):
-    def __init__(self):
-        super().__init__(
             choices=[
                 "Bind An Instance",
                 "Start an Instance",
-                "Stop An Instance" "Help",
-                "Exit",
+                "Stop An Instance",
             ],
             header="Welcome to Tabsdata. Select an Option to get started below",
         )
@@ -278,22 +365,20 @@ class GettingStartedScreen(ScreenTemplate):
 
 class PortConfigScreen(Screen):
     """
-    Screen that asks for external and internal ports with validation:
+    Screen that asks for:
+      - Instance name (for new instances)
+      - External port
+      - Internal port
 
-      * Port must be 1–65535
-      * Port must not be in use by another running instance
-      * External and internal ports must not be equal
-
-    On success, stores the results on the app as:
-      app.selected_instance_name
-      app.selected_external_port
-      app.selected_internal_port
-      app.instance_start_configuration (dict)
+    Validation:
+      * Port 1–65535
+      * Port not in use by another running instance
+      * Internal port must not equal external port
     """
 
     CSS = """
     * {
-  height: auto;
+        height: auto;
     }
     Screen {
         layout: vertical;
@@ -305,48 +390,40 @@ class PortConfigScreen(Screen):
     }
     """
 
-    def __init__(self, instance=None) -> None:
+    def __init__(self, instance) -> None:
         super().__init__()
         if instance is None:
-            try:
-                instance = self.app.app_query_session(
-                    "instances", limit=1, working=True
-                )[0]
-            except:
-                raise TypeError(f"No Instance provided and no cached working instance")
-        elif instance == "_Create_Instance":
-            instance = instance_name_to_instance(instance)
-        elif type(instance) == str:
-            try:
-                instance = self.app.app_query_session(
-                    "instances", limit=1, name=instance
-                )
-            except:
-                raise TypeError(f"Instance Name not found")
-        else:
-            pass
+            raise TypeError("PortConfigScreen requires an Instance object")
 
+        if instance.name == "_Create_Instance":
+            self.placeholder = "tabsdata"
+        else:
+            self.placeholder = instance.name
         self.instance = instance
 
     def compose(self) -> ComposeResult:
-        logging.info(self.virtual_size)
-
         yield VerticalScroll(
             CurrentInstanceWidget(self.instance),
             Label(
                 "What Would Like to call your Tabsdata Instance:",
                 id="title-instance",
             ),
-            Input(placeholder="tabsdata", id="instance-input"),
+            Input(placeholder=self.placeholder, id="instance-input"),
             Label("", id="instance-error"),
             Label("", id="instance-confirm"),
             Label("Configure Tabsdata ports", id="title"),
             Label("External port:", id="ext-label"),
-            Input(placeholder=self.instance.arg_ext, id="ext-input"),
+            Input(
+                placeholder=str(self.instance.arg_ext or ""),
+                id="ext-input",
+            ),
             Label("", id="ext-error"),
             Label("", id="ext-confirm"),
             Label("Internal port:", id="int-label"),
-            Input(placeholder=self.instance.arg_int, id="int-input"),
+            Input(
+                placeholder=str(self.instance.arg_int or ""),
+                id="int-input",
+            ),
             Label("", id="int-error"),
             Label("", id="int-confirm"),
             Static(""),
@@ -354,91 +431,130 @@ class PortConfigScreen(Screen):
 
         yield Footer()
 
-    def set_visibility(self):
-        if self.instance is not None and self.instance.name != "_Create_Instance":
-            # Instance already known: hide instance name input, start on ext port
-            self.query_one("#instance-confirm", Label).display = False
-            self.query_one("#instance-error", Label).display = False
-            self.query_one("#instance-input", Input).display = False
-            self.query_one("#title-instance", Label).display = False
-            self.set_focus(self.query_one("#ext-input", Input))
-        else:
-            # No instance yet: start by asking for name
-            self.query_one("#ext-confirm", Label).display = False
-            self.query_one("#ext-error", Label).display = False
-            self.query_one("#ext-input", Input).display = False
-            self.query_one("#ext-label", Label).display = False
-            self.query_one("#title", Label).display = False
-            self.set_focus(self.query_one("#instance-input", Input))
+    def set_visibility(self) -> None:
+        """Decide which step to show first and hide later steps."""
+        is_existing = (
+            self.instance is not None and self.instance.name != "_Create_Instance"
+        )
 
-        self.query_one("#int-label", Label).display = False
-        self.query_one("#int-input", Input).display = False
-        self.query_one("#int-error", Label).display = False
-        self.query_one("#int-confirm", Label).display = False
+        # Instance name step
+        show_instance_name = not is_existing
+        self.query_one("#title-instance", Label).display = show_instance_name
+        self.query_one("#instance-input", Input).display = show_instance_name
+        self.query_one("#instance-error", Label).display = show_instance_name
+        self.query_one("#instance-confirm", Label).display = show_instance_name
+
+        # External port step is hidden until instance name is chosen for new instances
+        show_ext = is_existing
+        self.query_one("#title", Label).display = show_ext
+        self.query_one("#ext-label", Label).display = show_ext
+        self.query_one("#ext-input", Input).display = show_ext
+        self.query_one("#ext-error", Label).display = show_ext
+        self.query_one("#ext-confirm", Label).display = show_ext
+
+        # Internal port step starts hidden
+        for wid in ("#int-label", "#int-input", "#int-error", "#int-confirm"):
+            self.query_one(wid, Static | Label | Input).display = False
+
+        # Focus
+        if show_instance_name:
+            self.set_focus(self.query_one("#instance-input", Input))
+        else:
+            self.set_focus(self.query_one("#ext-input", Input))
 
     def on_mount(self) -> None:
-        logging.info(self.virtual_size)
         self.set_visibility()
 
     def on_screen_resume(self, event) -> None:
         self.set_visibility()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        logging.info(self.virtual_size)
-
-        if event.input.id == "ext-input":
-            self._handle_external_submitted(event.input)
-        elif event.input.id == "int-input":
-            self._handle_internal_submitted(event.input)
-        elif event.input.id == "instance-input":
+        input_id = event.input.id
+        if input_id == "ext-input":
+            self._handle_port("ext", event.input, require_diff=False)
+        elif input_id == "int-input":
+            self._handle_port("int", event.input, require_diff=True)
+        elif input_id == "instance-input":
             self._handle_instance_name_submitted(event.input)
 
     # ---------------------------
-    # External port flow
+    # Shared port flow
     # ---------------------------
 
-    def _handle_external_submitted(self, ext_input: Input) -> None:
-        ext_error = self.query_one("#ext-error", Label)
-        ext_confirm = self.query_one("#ext-confirm", Label)
+    def _handle_port(self, kind: str, port_input: Input, require_diff: bool) -> None:
+        """
+        kind: "ext" or "int"
+        require_diff: True for internal port, which must differ from arg_ext.
+        """
+        error_label = self.query_one(f"#{kind}-error", Label)
+        confirm_label = self.query_one(f"#{kind}-confirm", Label)
 
-        ext_error.update("")
-        ext_confirm.update("")
+        error_label.update("")
+        confirm_label.update("")
 
-        value = ext_input.value.strip()
+        # Current value on instance, e.g. arg_ext or arg_int
+        current_value = getattr(self.instance, f"arg_{kind}", None)
+
+        value = port_input.value.strip()
         if value == "":
-            value = self.instance.arg_ext
+            value = current_value
 
         if not validate_port(value):
-            ext_error.update("That is not a valid port number. Please enter 1–65535.")
-            self.set_focus(ext_input)
-            ext_input.clear()
+            error_label.update("That is not a valid port number. Please enter 1–65535.")
+            self.set_focus(port_input)
+            port_input.clear()
             return
 
         port = int(value)
-        in_use_by = port_in_use(port, current_instance_name=self.instance.name)
+
+        # Internal must not equal external
+        if (
+            require_diff
+            and self.instance.arg_ext is not None
+            and port == self.instance.arg_ext
+        ):
+            error_label.update(
+                "Internal port must not be the same as external port. "
+                "Please choose another port."
+            )
+            self.set_focus(port_input)
+            port_input.clear()
+            return
+
+        in_use_by = port_in_use(
+            app=self.app,
+            port=port,
+            current_instance_name=self.instance.name,
+        )
 
         if in_use_by is not None:
-            ext_error.update(
+            error_label.update(
                 f"Port {port} is already in use by instance '{in_use_by}'. "
                 "Please choose a different port."
             )
-            self.set_focus(ext_input)
-            ext_input.clear()
+            self.set_focus(port_input)
+            port_input.clear()
             return
 
-        # Valid and free
-        self.instance.arg_ext = port
-        ext_confirm.update(
-            Text(f"Selected external port: {port}", style="bold #22c55e")
+        # Valid, distinct, and free
+        setattr(self.instance, f"arg_{kind}", port)
+        confirm_label.update(
+            Text(
+                f"Selected {'external' if kind == 'ext' else 'internal'} port: {port}",
+                style="bold #22c55e",
+            )
         )
 
-        # Reveal internal port input and focus it
-        self.query_one("#int-label", Label).display = True
-        self.query_one("#int-input", Input).display = True
-        self.query_one("#int-error", Label).display = True
-        self.query_one("#int-confirm", Label).display = True
-
-        self.set_focus(self.query_one("#int-input", Input))
+        # If we just set external, reveal internal inputs
+        if kind == "ext":
+            self.query_one("#int-label", Label).display = True
+            self.query_one("#int-input", Input).display = True
+            self.query_one("#int-error", Label).display = True
+            self.query_one("#int-confirm", Label).display = True
+            self.set_focus(self.query_one("#int-input", Input))
+        else:
+            # Done with both ports, return instance to app
+            self.app.handle_api_response(self, self.instance)
 
     # ---------------------------
     # Instance Name flow
@@ -451,34 +567,16 @@ class PortConfigScreen(Screen):
         instance_error.update("")
         instance_confirm.update("")
 
-        value = instance_input.value.strip()
-        if value == "":
-            value = "tabsdata"
+        value = instance_input.value.strip() or "tabsdata"
 
-        if name_in_use(value):
+        if name_in_use(self.app, value):
             instance_error.update("That Name is Already in Use. Please Try Another:")
             self.set_focus(instance_input)
             instance_input.clear()
             return
 
         # Valid and free
-        print(
-            print(
-                {
-                    c.name: getattr(self.instance, c.name)
-                    for c in self.instance.__table__.columns
-                }
-            )
-        )
         self.instance.name = value
-        print(
-            print(
-                {
-                    c.name: getattr(self.instance, c.name)
-                    for c in self.instance.__table__.columns
-                }
-            )
-        )
         instance_confirm.update(
             Text(
                 f"Defined an Instance with the following Name: {value}",
@@ -486,67 +584,14 @@ class PortConfigScreen(Screen):
             )
         )
 
-        # Reveal external port input and focus it
+        # Reveal external port step and move focus there
+        self.query_one("#title", Label).display = True
         self.query_one("#ext-label", Label).display = True
         self.query_one("#ext-input", Input).display = True
         self.query_one("#ext-error", Label).display = True
         self.query_one("#ext-confirm", Label).display = True
 
         self.set_focus(self.query_one("#ext-input", Input))
-
-    # ---------------------------
-    # Internal port flow
-    # ---------------------------
-
-    def _handle_internal_submitted(self, int_input: Input) -> None:
-
-        int_error = self.query_one("#int-error", Label)
-        int_confirm = self.query_one("#int-confirm", Label)
-
-        int_error.update("")
-        int_confirm.update("")
-
-        value = int_input.value.strip()
-        if value == "":
-            value = self.instance.arg_int
-
-        if not validate_port(value):
-            int_error.update("That is not a valid port number. Please enter 1–65535.")
-            self.set_focus(int_input)
-            int_input.clear()
-            return
-
-        port = int(value)
-
-        # Must not match external
-        if self.instance.arg_ext is not None and port == self.instance.arg_ext:
-            int_error.update(
-                "Internal port must not be the same as external port. "
-                "Please choose another port."
-            )
-            self.set_focus(int_input)
-            int_input.clear()
-            return
-
-        in_use_by = port_in_use(port, current_instance_name=self.instance.name)
-
-        if in_use_by is not None:
-            int_error.update(
-                f"Port {port} is already in use by instance '{in_use_by}'. "
-                "Please choose a different port."
-            )
-            self.set_focus(int_input)
-            int_input.clear()
-            return
-
-        # Valid, distinct, and free
-        self.instance.arg_int = port
-        int_confirm.update(
-            Text(f"Selected internal port: {port}", style="bold #22c55e")
-        )
-
-        # Store result on the app
-        self.app.handle_api_response(self, self.instance)
 
 
 @dataclass
@@ -575,6 +620,9 @@ class TaskRow(Horizontal):
 
 
 class SequentialTasksScreenTemplate(Screen):
+    BINDINGS = [
+        ("enter", "press_close", "Done"),
+    ]
     CSS = """
         * {
   height: auto;
@@ -629,13 +677,15 @@ class SequentialTasksScreenTemplate(Screen):
             ),
         )
 
+    def conclude_tasks(self):
+        self.query_one(VerticalScroll).scroll_end(animate=False)
+
     async def on_mount(self) -> None:
         self.log_widget = self.query_one("#task-log", RichLog)
         self.log_line(None, "Starting setup tasks…")
         asyncio.create_task(self.run_tasks())
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-
         if event.button.id == "close-btn":
             self.app.handle_api_response(self)
 
@@ -650,6 +700,31 @@ class SequentialTasksScreenTemplate(Screen):
             self.log_widget.write(line)
         logging.info(line)
 
+    async def run_logged_subprocess(
+        self,
+        label: str | None,
+        *args: str,
+    ) -> int:
+        """Run a subprocess, stream its output into the log, and return exit code."""
+        self.log_line(label, f"Running: {' '.join(args)}")
+
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            text = line.decode().rstrip("\n")
+            self.log_line(label, text)
+
+        code = await process.wait()
+        self.log_line(label, f"Exited with code {code}")
+        return code
+
     async def run_single_task(self, idx: int, task: TaskSpec) -> None:
         row = self.task_rows[idx]
         row.set_running()
@@ -663,6 +738,14 @@ class SequentialTasksScreenTemplate(Screen):
         finally:
             row.set_done()
 
+    def action_press_close(self) -> None:
+        # Only act if the button exists
+        try:
+            btn = self.query_one("#close-btn", Button)
+        except Exception:
+            return
+        btn.press()
+
     async def run_tasks(self) -> None:
         background = []
         for i, t in enumerate(self.tasks):
@@ -675,123 +758,88 @@ class SequentialTasksScreenTemplate(Screen):
         if background:
             await asyncio.gather(*background)
         self.log_line(None, "🎉 All tasks complete.")
+        self.conclude_tasks()
         footer = self.query_one(Footer)
-        await self.mount(Button("Done", id="close-btn"), before=footer)
+        button = await self.mount(Button("Done", id="close-btn"), before=footer)
+        button.focus()
 
 
 class BindAndStartInstance(SequentialTasksScreenTemplate):
     def __init__(self, instance) -> None:
-        tasks = [
-            TaskSpec("Preparing Instance", self.prepare_instance),
-            TaskSpec("Binding Ports", self.bind_ports),
-            TaskSpec("Connecting to Tabsdata instance", self.connect_tabsdata),
-            TaskSpec("Checking Server Status", self.run_tdserver_status),
-        ]
         self.instance = instance
         self.instance.working = True
-        self.instance_name = instance.name
-        self.ext_port = instance.arg_ext
-        self.int_port = instance.arg_int
+
+        tasks = [
+            TaskSpec(
+                "Preparing Instance",
+                partial(instance_tasks.prepare_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Binding Ports",
+                partial(instance_tasks.bind_ports, self, self.instance),
+            ),
+            TaskSpec(
+                "Connecting to Tabsdata instance",
+                partial(instance_tasks.connect_tabsdata, self, self.instance),
+            ),
+            TaskSpec(
+                "Checking Server Status",
+                partial(instance_tasks.run_tdserver_status, self, self.instance),
+            ),
+        ]
+
         super().__init__(tasks)
 
-    async def prepare_instance(self, label=None):
-        if self.instance.status == "Running":
-            self.log_line(label, "STOP SERVER")
-            process = await asyncio.create_subprocess_exec(
-                "tdserver",
-                "stop",
-                "--instance",
-                f"{self.instance_name}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        elif self.instance.status == "Not Running":
-            self.log_line(label, "START SERVER")
-            process = await asyncio.create_subprocess_exec(
-                "tdserver",
-                "create",
-                "--instance",
-                f"{self.instance_name}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        else:
-            pass
-
-        if "process" in locals():
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                self.log_line(label, line.decode().rstrip("\n"))
-            code = await process.wait()
-            self.log_line(label, f"Exited with code {code}")
-
-    async def bind_ports(self, label=None):
-        CONFIG_PATH = root = (
-            Path.home()
-            / ".tabsdata"
-            / "instances"
-            / self.instance_name
-            / "workspace"
-            / "config"
-            / "proc"
-            / "regular"
-            / "apiserver"
-            / "config"
-            / "config.yaml"
-        )
-        logging.info(CONFIG_PATH)
-
-        cfg_ext = set_yaml_value(
-            path=CONFIG_PATH,
-            key="addresses",
-            value=f"127.0.0.1:{self.ext_port}",
-            value_type="list",
-        )
-        self.log_line(label, cfg_ext)
-        cfg_int = set_yaml_value(
-            path=CONFIG_PATH,
-            key="internal_addresses",
-            value=f"127.0.0.1:{self.int_port}",
-            value_type="list",
-        )
-        self.log_line(label, cfg_int)
-
-    async def connect_tabsdata(self, label=None):
-        process = await asyncio.create_subprocess_exec(
-            "tdserver",
-            "start",
-            "--instance",
-            f"{self.instance_name}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        self.log_line(label, "Running tdserver status…")
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            self.log_line(label, line.decode().rstrip("\n"))
-        code = await process.wait()
-        self.log_line(label, f"Exited with code {code}")
-
-    async def run_tdserver_status(self, label=None):
-        process = await asyncio.create_subprocess_exec(
-            "tdserver",
-            "status",
-            "--instance",
-            f"{self.instance_name}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        self.log_line(label, "Running tdserver status…")
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            self.log_line(label, line.decode().rstrip("\n"))
-        code = await process.wait()
-        self.log_line(label, f"Exited with code {code}")
+    def conclude_tasks(self):
+        super().conclude_tasks()
         manage_working_instance(self.app.session, self.instance)
         self.app.session.merge(self.instance)
+        self.app.session.commit()
+
+
+class StartInstance(SequentialTasksScreenTemplate):
+    def __init__(self, instance) -> None:
+        self.instance = instance
+
+        tasks = [
+            TaskSpec(
+                "Preparing Instance",
+                partial(instance_tasks.prepare_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Binding Ports",
+                partial(instance_tasks.bind_ports, self, self.instance),
+            ),
+            TaskSpec(
+                "Connecting to Tabsdata instance",
+                partial(instance_tasks.connect_tabsdata, self, self.instance),
+            ),
+            TaskSpec(
+                "Checking Server Status",
+                partial(instance_tasks.run_tdserver_status, self, self.instance),
+            ),
+        ]
+
+        super().__init__(tasks)
+
+
+class StopInstance(SequentialTasksScreenTemplate):
+    def __init__(self, instance) -> None:
+        self.instance = instance
+
+        tasks = [
+            TaskSpec(
+                "Preparing Instance",
+                partial(instance_tasks.prepare_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Stopping Tabsdata instance",
+                partial(instance_tasks.stop_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Checking Server Status",
+                partial(instance_tasks.run_tdserver_status, self, self.instance),
+            ),
+        ]
+
+        super().__init__(tasks)

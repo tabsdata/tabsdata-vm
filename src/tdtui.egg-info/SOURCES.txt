@@ -12,6 +12,7 @@ src/tdtui/core/__init__.py
 src/tdtui/core/api_response_rules.py
 src/tdtui/core/db.py
 src/tdtui/core/find_instances.py
+src/tdtui/core/instance_tasks.py
 src/tdtui/core/models.py
 src/tdtui/core/subprocess_runner.py
 src/tdtui/core/td_dataclasses.py

@@ -32,14 +32,14 @@ def validate_port(port_str: str) -> bool:
     return 1 <= port <= 65535
 
 
-def get_running_ports() -> List[Dict[str, Any]]:
+def get_running_ports(app) -> List[Dict[str, Any]]:
     """
     Python equivalent of get_running_ports() from bash.
 
     Returns a list of dicts for running instances, each with:
       name, status, external_port, internal_port
     """
-    instances = sync_filesystem_instances_to_db()
+    instances = sync_filesystem_instances_to_db(app=app)
     running = []
 
     for inst in instances:
@@ -68,12 +68,12 @@ def get_running_ports() -> List[Dict[str, Any]]:
 
 
 def port_in_use(
-    port: int, current_instance_name: Optional[str] = None
+    app, port: int, current_instance_name: Optional[str] = None
 ) -> Optional[str]:
     """
     Return the instance name using this port, or None if free.
     """
-    for inst in get_running_ports():
+    for inst in get_running_ports(app):
         name = inst.get("name")
         if current_instance_name and name == current_instance_name:
             continue
@@ -87,11 +87,11 @@ def port_in_use(
     return None
 
 
-def name_in_use(selected_name: str) -> bool:
+def name_in_use(app, selected_name: str) -> bool:
     """
     Return True if an instance already uses this name.
     """
-    for inst in sync_filesystem_instances_to_db():
+    for inst in sync_filesystem_instances_to_db(app):
         name = inst.name
         if selected_name == name:
             return True

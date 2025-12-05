@@ -29,6 +29,14 @@ from textual.widgets import Static
 from tdtui.core.db import start_session
 from tdtui.core.find_instances import query_session
 from tdtui.core.models import Instance, get_model_by_tablename
+from rich.traceback import install
+import textual
+import sqlalchemy
+
+install(
+    show_locals=False,  # or True if you like locals
+    suppress=[textual, sqlalchemy],
+)
 
 logging.basicConfig(
     filename="/Users/danieladayev/test-tui/tabsdata-tui/logger.log",
@@ -40,7 +48,7 @@ logging.basicConfig(
 class NestedMenuApp(App):
     CSS = """
     * {
-#   height: auto;
+   height: auto;
     }
     ListView {
     height: 1fr;

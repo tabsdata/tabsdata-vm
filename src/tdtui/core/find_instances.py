@@ -127,10 +127,10 @@ def instance_name_to_instance(instance_name: str) -> Instance:
     Does NOT interact with the database.
     """
     available_instances = find_tabsdata_instance_names()
-    if instance_name not in available_instances:
+    if instance_name not in available_instances and instance_name == "_Create_Instance":
         return Instance(
             name=instance_name,
-            status="Not Running",
+            status="Not Created",
             cfg_ext="2457",
             cfg_int="2458",
             arg_ext="2457",

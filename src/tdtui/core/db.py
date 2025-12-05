@@ -14,7 +14,7 @@ def start_session():
     return session, Base
 
 
-session = start_session()
-x = query_session(session[0], Instance)
+session = start_session()[0]
+x = query_session(session=session, model=Instance, status="Not Running")
 for inst in x:
     print({c.name: getattr(inst, c.name) for c in inst.__table__.columns})
