@@ -9,7 +9,6 @@ Requires-Dist: typer
 Requires-Dist: Rich
 Requires-Dist: Textual
 Requires-Dist: InquirerPy
-Requires-Dist: yaspin
 Requires-Dist: psutil
 
 # tabsdata-tui

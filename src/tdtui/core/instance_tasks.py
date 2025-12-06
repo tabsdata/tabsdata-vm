@@ -24,6 +24,34 @@ async def stop_instance(runner, instance, label=None) -> int:
     return code
 
 
+async def tabsdata_login(runner, instance, label=None) -> int:
+    """Login to a Tabsdata Instance"""
+    runner.log_line(label, f"Logging User into {instance.name}...")
+    code = await runner.run_logged_subprocess(
+        label,
+        "td",
+        "login",
+        "--server",
+        f"{instance.public_ip}:{instance.arg_ext}",
+        "--user",
+        "admin",
+        "--role",
+        "sys_admin",
+        "--password",
+        "tabsdata",
+    )
+    runner.log_line(label, f"Stop command exited with code {code}")
+    return code
+
+
+async def tabsdata_logout(runner, instance, label=None) -> int:
+    """Login to a Tabsdata Instance"""
+    runner.log_line(label, f"Logging User into {instance.name}...")
+    code = await runner.run_logged_subprocess(label, "td", "logout")
+    runner.log_line(label, f"Logout command exited with code {code}")
+    return code
+
+
 async def create_instance(runner, instance, label=None) -> int:
     """Create a new Tabsdata instance."""
     runner.log_line(label, f"Creating instance {instance.name}...")

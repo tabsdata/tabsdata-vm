@@ -63,6 +63,7 @@ from tdtui.textual_assets.textual_instance_config import (
     get_running_ports,
     validate_port,
 )
+from tdtui.core.models import Instance
 
 
 from textual.app import ComposeResult
@@ -307,7 +308,7 @@ class InstanceSelectionScreen(Screen):
 
     def compose(self) -> ComposeResult:
         instances = self.instances
-        if len(instances) == 1:
+        if isinstance(instances, Instance):
             instances = [instances]
         instanceWidgets = [
             LabelItem(label=InstanceWidget(i), override_label=i.name) for i in instances
@@ -786,6 +787,10 @@ class BindAndStartInstance(SequentialTasksScreenTemplate):
                 "Checking Server Status",
                 partial(instance_tasks.run_tdserver_status, self, self.instance),
             ),
+            TaskSpec(
+                "Logging you In",
+                partial(instance_tasks.tabsdata_login, self, self.instance),
+            ),
         ]
 
         super().__init__(tasks)
@@ -839,6 +844,10 @@ class StopInstance(SequentialTasksScreenTemplate):
             TaskSpec(
                 "Checking Server Status",
                 partial(instance_tasks.run_tdserver_status, self, self.instance),
+            ),
+            TaskSpec(
+                "Logging you Out",
+                partial(instance_tasks.tabsdata_logout, self, self.instance),
             ),
         ]
 
