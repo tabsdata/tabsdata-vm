@@ -51,7 +51,7 @@ class NestedMenuApp(App):
    height: auto;
     }
     ListView {
-    height: 1fr;
+    height: auto;
 }
     VerticalScroll {
         width: 1fr;

@@ -1,6 +1,7 @@
 from textual.screen import Screen
 from tdtui.textual_assets import textual_screens
 from tdtui.core.find_instances import instance_name_to_instance
+import os
 
 
 def process_response(screen: Screen, label=None):
@@ -57,6 +58,10 @@ def process_response(screen: Screen, label=None):
     if screen_name == "MainScreen":
         if label == "Instance Management":
             app.push_screen(textual_screens.InstanceManagementScreen())
+            return
+
+        if label == "Asset Management":
+            app.push_screen(textual_screens.PyFileTreeScreen(root=os.getcwd()))
             return
 
         if label == "Exit":

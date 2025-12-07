@@ -21,5 +21,6 @@ src/tdtui/textual_assets/__init__.py
 src/tdtui/textual_assets/api_processor.py
 src/tdtui/textual_assets/screen_templates.py
 src/tdtui/textual_assets/spinners.py
+src/tdtui/textual_assets/test_node.py
 src/tdtui/textual_assets/textual_instance_config.py
 src/tdtui/textual_assets/textual_screens.py

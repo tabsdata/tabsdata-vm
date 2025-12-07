@@ -4,9 +4,11 @@ from textual.screen import Screen
 from textual.widgets import ListView, ListItem, Label, Static, Button
 from pathlib import Path
 from tdtui.textual_assets.spinners import SpinnerWidget
-from typing import Awaitable, Callable, List
-from textual.widgets import RichLog
+from typing import Awaitable, Callable, List, Iterable
+from textual.widgets import RichLog, DirectoryTree
 from textual.containers import Center
+
+import ast
 
 from tdtui.core.find_instances import (
     sync_filesystem_instances_to_db,
@@ -75,6 +77,8 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Static, Button
 from textual.containers import Horizontal, Vertical
+import os
+from textual.widgets._tree import TreeNode
 
 
 class BSOD(Screen):
@@ -266,8 +270,40 @@ class LabelItem(ListItem):
         yield self.front
 
 
-class ScreenTemplate(Screen):
+class ListScreenTemplate(Screen):
     def __init__(self, choices=None, id=None, header="Select an Option: "):
+        super().__init__()
+        self.choices = choices
+        if id is not None:
+            self.id = id
+        self.header = header
+        self.app.working_instance = self.app.app_query_session(
+            "instances", working=True
+        )
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            if self.header is not None:
+                yield Label(self.header, id="listHeader")
+            yield CurrentInstanceWidget(self.app.working_instance)
+            choiceLabels = [LabelItem(i) for i in self.choices]
+            self.list = ListView(*choiceLabels)
+            yield self.list
+            yield Footer()
+
+    def on_show(self) -> None:
+        # called again when you push this screen a
+        #  second time (if reused)
+        self.set_focus(self.list)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        logging.info(type(self.screen).__name__)
+        self.app.handle_api_response(self, selected)  # push instance
+
+
+class ListScreenTemplate(Screen):
+    def __init__(self, choices=None, id=None, header="Select a File: "):
         super().__init__()
         self.choices = choices
         if id is not None:
@@ -377,21 +413,21 @@ class InstanceSelectionScreen(Screen):
             pass
 
 
-class MainScreen(ScreenTemplate):
+class MainScreen(ListScreenTemplate):
 
     def __init__(self):
         super().__init__(
             choices=[
                 "Instance Management",
+                "Asset Management",
                 "Workflow Management (Not Built Yet)",
-                "Asset Management (Not Built Yet)",
                 "Config Management (Not Built Yet)",
                 "Exit",
             ],
         )
 
 
-class InstanceManagementScreen(ScreenTemplate):
+class InstanceManagementScreen(ListScreenTemplate):
     def __init__(self):
         super().__init__(
             choices=[
@@ -897,3 +933,221 @@ class StopInstance(SequentialTasksScreenTemplate):
         self.instance.working = False
         self.app.session.merge(self.instance)
         self.app.session.commit()
+
+
+class PyOnlyDirectoryTree(DirectoryTree):
+    """DirectoryTree that:
+    - only shows .py files (but keeps directories)
+    - auto-expands directories that contain .py files, up to a given depth.
+    """
+
+    DEFAULT_CSS = """
+    DirectoryTree {
+        
+        & > .directory-tree--folder {
+            text-style: bold;
+            color: green;
+        }
+
+        & > .directory-tree--extension {
+            text-style: italic;
+        }
+        
+        & > .directory-tree--file {
+            text-style: italic;
+            color: green;
+        }
+
+        & > .directory-tree--hidden {
+            text-style: dim;
+        }
+
+        &:ansi {
+        
+            & > .tree--guides {
+               color: transparent;              
+            }
+        
+            & > .directory-tree--folder {
+                text-style: bold;
+            }
+
+            & > .directory-tree--extension {
+                text-style: italic;
+            }
+
+            & > .directory-tree--hidden {
+                color: ansi_default;
+                text-style: dim;
+            }
+        }
+
+    }
+
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        auto_expand_depth: int = 2,
+        **kwargs,
+    ) -> None:
+        self.auto_expand_depth = auto_expand_depth
+        super().__init__(path, **kwargs)
+
+    # 1) Only show dirs + .py files in each directory
+    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
+        result = []
+        for p in paths:
+            if p.suffix == ".py":
+                if self._file_is_tabsdata_function(p):
+                    result.append(p)
+            if p.is_dir():
+                if self._dir_has_py(p):
+                    result.append(p)
+        return result
+
+    # def filter_path(self, path: Path) -> Iterable[Path]:
+    #     result = []
+    #     if path.is_file():
+    #         if path.suffix != ".py":
+    #             return []
+    #         else:
+    #             if self._file_is_tabsdata_function(path):
+    #                 return [path]
+    #     if path.is_dir():
+    #         child_list = []
+    #         for p in path.iterdir():
+    #             result.extend(self.filter_paths(p))
+    #     return result
+
+    def _file_is_tabsdata_function(self, path: Path):
+        """
+        Docstring for _file_is_tabsdata_function
+
+        :param self: DirectoryTree Override Class
+        :param path: Path to the File
+        :type path: Path
+        """
+        if path.suffix != ".py":
+            return False
+
+        try:
+            source = path.read_text()
+        except OSError:
+            return False
+
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            return False
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):  # or ast.AsyncFunctionDef if needed
+                for deco in node.decorator_list:
+                    func = deco.func if isinstance(deco, ast.Call) else deco
+
+                    if isinstance(func, ast.Attribute) and isinstance(
+                        func.value, ast.Name
+                    ):
+                        if func.value.id == "td" and func.attr in {
+                            "publisher",
+                            "subscriber",
+                            "transformer",
+                        }:
+                            return True
+        return False
+
+    # 2) Helper: does this directory contain any .py file (recursively)?
+    def _dir_has_py(self, path: Path) -> bool:
+        try:
+            for root, dirs, files in os.walk(path):
+                # files is a list of filenames (str), not Paths
+                for f in files:
+                    if not f.endswith(".py"):
+                        continue
+                    file_path = Path(root) / f
+                    if self._file_is_tabsdata_function(file_path):
+                        return True
+        except PermissionError:
+            return False
+        return False
+
+    # 3) After a node is populated, optionally expand children that have .py under them
+    def _populate_node(self, node: TreeNode, content: Iterable[Path]) -> None:
+        # Let the base class actually add children + call node.expand()
+        super()._populate_node(node, content)
+
+        # If node has no data, bail
+        if node.data is None:
+            return
+
+        # Compute depth of this node relative to the root path
+        parent_path: Path = node.data.path
+        try:
+            rel = parent_path.relative_to(self.path)
+            depth = 0 if str(rel) == "." else len(rel.parts)
+        except ValueError:
+            depth = 0
+
+        # If we've already reached the configured depth, stop
+        if depth >= self.auto_expand_depth:
+            return
+
+        # For each child directory that has any .py below it,
+        # queue it for loading and expand it.
+        for child in list(node.children):
+            if child.data is None:
+                continue
+            child_path: Path = child.data.path
+            if self._safe_is_dir(child_path) and self._dir_has_py(child_path):
+                # Ask DirectoryTree to load this directory in the background
+                self._add_to_load_queue(child)
+                child.expand()
+
+
+class PyFileTreeScreen(Screen):
+    """ListScreenTemplate variant that shows a DirectoryTree of .py files."""
+
+    def __init__(
+        self, id=None, header="Select a Python file: ", root: str | Path = "."
+    ):
+        # Reuse ListScreenTemplate init, but choices are irrelevant for the tree
+        super().__init__()
+        self.root = Path(root)
+        self.header = header
+
+    def compose(self) -> ComposeResult:
+        """Same layout as ListScreenTemplate, but with a DirectoryTree instead of ListView."""
+        with VerticalScroll():
+            if self.header is not None:
+                yield Label(self.header, id="listHeader")
+
+            # Reuse your existing "current instance" widget
+            yield CurrentInstanceWidget(self.app.working_instance)
+
+            # Swap ListView for a DirectoryTree rooted at CWD, filtered to .py files
+            self.dirtree = PyOnlyDirectoryTree(
+                self.root,
+                id="py-directory-tree",
+            )
+            self.dirtree.show_guides = True
+            self.dirtree.guide_depth = 2
+            self.dirtree.show_root = True
+            yield self.dirtree
+
+            yield Footer()
+
+    def on_show(self) -> None:
+        """Focus the directory tree when the screen is shown."""
+        self.set_focus(self.dirtree)
+
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
+        """Handle selection of a file in the directory tree."""
+        selected_path: Path = event.path
+        print(str(event.path), event.path)
+        self.app.exit()
+        # self.app.handle_api_response(self, str(selected_path))
