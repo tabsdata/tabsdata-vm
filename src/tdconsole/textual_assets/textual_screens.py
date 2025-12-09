@@ -183,7 +183,9 @@ class InstanceWidget(Static):
         line1 = f"No External Running Port"
         line2 = f"No Internal Running Port"
 
-        if inst.name == "_Create_Instance":
+        if inst is None:
+            pass
+        elif inst.name == "_Create_Instance":
             status_color = "#1F66D1"
             status_line = f"Create a New Instance"
             line1 = f""
@@ -652,12 +654,18 @@ class TaskRow(Horizontal):
         self.query_one(f"#{self.id}-label", Label).update(self.description)
 
     def set_done(self, exit_code: Optional[int] = None) -> None:
-        self.query_one(f"#{self.id}-spinner").display = False
-        print(self.description, exit_code)
-        if exit_code == 0 or exit_code is None:
-            self.query_one(f"#{self.id}-label", Label).update(f"✅ {self.description}")
-        else:
-            self.query_one(f"#{self.id}-label", Label).update(f"❌ {self.description}")
+        try:
+            self.query_one(f"#{self.id}-spinner").display = False
+            if exit_code == 0 or exit_code is None:
+                self.query_one(f"#{self.id}-label", Label).update(
+                    f"✅ {self.description}"
+                )
+            else:
+                self.query_one(f"#{self.id}-label", Label).update(
+                    f"❌ {self.description}"
+                )
+        except:
+            pass
 
 
 class SequentialTasksScreenTemplate(Screen):
@@ -779,7 +787,7 @@ class SequentialTasksScreenTemplate(Screen):
         row = self.task_rows[idx]
         row.set_running()
         self.log_line(task.description, "Starting")
-        code: int | None
+        code: int | None = None
 
         try:
             # allow task.func to return either None or an int
@@ -1168,5 +1176,4 @@ class PyFileTreeScreen(Screen):
     ) -> None:
         """Handle selection of a file in the directory tree."""
         selected_path: Path = event.path
-        print(event.path)
-        self.app.handle_api_response(self, event.path)
+        self.app.push_screen(AssetManagementScreen())
