@@ -9,6 +9,8 @@ from textual.widgets import RichLog, DirectoryTree, Pretty, Tree
 from textual.containers import Center
 from tdconsole.core import input_validators
 from textual import on
+from sqlalchemy.orm import Session
+from textual.events import Key, ScreenResume
 
 import ast
 
@@ -44,7 +46,7 @@ from typing import Optional, Dict, Any, List
 
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Input, Label, Static, Footer
+from textual.widgets import Input, Label, Static, Footer, Checkbox
 from textual.containers import Vertical, VerticalScroll
 from rich.text import Text
 from typing import Optional, Dict, List, Union
@@ -266,11 +268,10 @@ class LabelItem(ListItem):
 
 
 class ListScreenTemplate(Screen):
-    def __init__(self, choices=None, id=None, header="Select a File: "):
+    def __init__(self, choice_dict=None, header="Select a File: "):
         super().__init__()
-        self.choices = choices
-        if id is not None:
-            self.id = id
+        self.choice_dict = choice_dict
+        self.choices = list(choice_dict.keys())
         self.header = header
         self.app.working_instance = self.app.app_query_session(
             "instances", working=True
@@ -281,9 +282,7 @@ class ListScreenTemplate(Screen):
             if self.header is not None:
                 yield Label(self.header, id="listHeader")
             yield CurrentInstanceWidget(self.app.working_instance)
-            choiceLabels = [LabelItem(i) for i in self.choices]
-            self.list = ListView(*choiceLabels)
-            yield self.list
+            yield self.list_items()
             yield Footer()
 
     def on_show(self) -> None:
@@ -291,72 +290,84 @@ class ListScreenTemplate(Screen):
         #  second time (if reused)
         self.set_focus(self.list)
 
+    def list_items(self):
+        """Converts List to a ListView"""
+        choiceLabels = [LabelItem(i) for i in self.choices]
+        self.list = ListView(*choiceLabels)
+        return self.list
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         selected = event.item.label
-        if selected not in ["Asset Management", "Register a Function"]:
-            self.app.handle_api_response(self, selected)  # push instance
+        if selected in self.choices and self.choice_dict[selected] is not None:
+            screen = self.choice_dict[selected]
+            self.app.push_screen(screen())
+        else:
+            self.app.push_screen(BSOD())
 
 
-class InstanceSelectionScreen(Screen):
+class InstanceSelectionScreen(ListScreenTemplate):  ##############
     BINDINGS = [
         ("enter", "press_close", "Done"),
     ]
 
-    def __init__(self, instances=None):
-        super().__init__()
-        if instances is None and self.app.flow_mode != "stop":
-            self.instances = sync_filesystem_instances_to_db(app=self.app)
-        else:
-            self.instances = instances
-
-    def compose(self) -> ComposeResult:
-        instances = self.instances
-        if instances is None:
-            self.list = Vertical(
-                Static("No Instances Found"), Button("Back", id="back-btn")
-            )
-        else:
-            if isinstance(instances, Instance):
-                instances = [instances]
-
-            instanceWidgets = [
-                LabelItem(label=InstanceWidget(i), override_label=i.name)
-                for i in instances
-            ]
-
-            if self.app.flow_mode != "stop":
-                instanceWidgets.insert(
-                    0,
-                    LabelItem(
-                        label=InstanceWidget(inst="_Create_Instance"),
-                        override_label="_Create_Instance",
-                    ),
-                )
-            self.list = ListView(
-                *instanceWidgets,
-            )
-        with VerticalScroll():
-            # self.list = ListView(*[LabelItem('a'), LabelItem('b')])
-            yield self.list
-        yield Footer()
-        try:
-            btn = self.query_one("#back-btn")
-            btn.focus()
-        except:
-            pass
+    def __init__(self, instances=None, flow_mode=None):
+        self.app.flow_mode = flow_mode
+        self.instances = self.resolve_instance_list()
+        super().__init__(choice_dict=self.instances)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "back-btn":
             self.app.pop_screen()
 
     def on_show(self) -> None:
-        # called again when you push this screen a
-        #  second time (if reused)
         self.set_focus(self.list)
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        selected = event.item.label
-        self.app.handle_api_response(self, selected)  # push instance
+    def list_items(self):
+        choiceLabels = [
+            LabelItem(label=InstanceWidget(i), override_label=i) for i in self.choices
+        ]
+        self.list = ListView(*choiceLabels)
+        return self.list
+
+    def resolve_instance_list(self):
+        session: Session = self.app.session
+        instance_list = session.query(Instance).all()
+        temp_list = []
+        if self.app.flow_mode == "bind":
+            temp_list = [instance_name_to_instance("_Create_Instance")]
+            temp_list.extend(instance_list)
+        elif self.app.flow_mode == "start":
+            temp_list = [instance_name_to_instance("_Create_Instance")]
+            temp_list.extend(instance_list)
+        elif self.app.flow_mode == "stop":
+            temp_list = session.query(Instance).filter_by(status="Running").all()
+            new = new = {
+                "name": False,
+                "arg_ext": False,
+                "arg_int": False,
+                "use_https": False,
+            }
+            return_list = {
+                i: partial(StopInstance, current=i, new=new) for i in temp_list
+            }
+            return return_list
+        elif self.app.flow_mode == "delete":
+            temp_list = session.query(Instance).all()
+            new = new = {
+                "name": False,
+                "arg_ext": False,
+                "arg_int": False,
+                "use_https": False,
+            }
+            return_list = {
+                i: partial(DeleteInstance, current=i, new=new) for i in temp_list
+            }
+            return return_list
+        else:
+            temp_list = session.query(Instance).all()
+
+        return_list = {i: partial(PortConfigScreen, instance=i) for i in temp_list}
+        return return_list
 
     def action_press_close(self) -> None:
         # Only act if the button exists
@@ -380,13 +391,13 @@ class MainScreen(ListScreenTemplate):
 
     def __init__(self):
         super().__init__(
-            choices=[
-                "Instance Management",
-                "Asset Management",
-                "Workflow Management (Not Built Yet)",
-                "Config Management (Not Built Yet)",
-                "Exit",
-            ],
+            choice_dict={
+                "Instance Management": InstanceManagementScreen,
+                "Asset Management": AssetManagementScreen,
+                "Workflow Management (Not Built Yet)": None,
+                "Config Management (Not Built Yet)": None,
+                "Exit": None,
+            },
         )
 
     @on(ListView.Selected)
@@ -395,21 +406,32 @@ class MainScreen(ListScreenTemplate):
         if value == "Asset Management":
             self.app.push_screen(AssetManagementScreen())
 
+    @on(ScreenResume)
+    def handle_old_screens(self, event: ScreenResume):
+        screen_stack = self.app.screen_stack
+        print("checking stack...")
+        if isinstance(screen_stack[-1], MainScreen) and len(screen_stack) > 2:
+            print(screen_stack)
+            while len(self.app.screen_stack) > 2:
+                self.app.pop_screen()
+                print("popped_screen")
+            print(self.app.screen_stack)
+
 
 class AssetManagementScreen(ListScreenTemplate):
 
     def __init__(self):
         super().__init__(
-            choices=[
-                "Register a Function",
-                "Update a Function",
-                "Delete a Function",
-                "Create a Collection",
-                "Delete a Collection",
-                "Delete a Table",
-                "Sample Table Schema",
-                "Sample Table Data" "Exit",
-            ],
+            choice_dict={
+                "Register a Function": PyFileTreeScreen,
+                "Update a Function": None,
+                "Delete a Function": None,
+                "Create a Collection": None,
+                "Delete a Collection": None,
+                "Delete a Table": None,
+                "Sample Table Schema": None,
+                "Sample Table Data" "Exit": None,
+            },
         )
 
     @on(ListView.Selected)
@@ -428,11 +450,16 @@ class AssetManagementScreen(ListScreenTemplate):
 class InstanceManagementScreen(ListScreenTemplate):
     def __init__(self):
         super().__init__(
-            choices=[
-                "Bind An Instance",
-                "Start an Instance",
-                "Stop An Instance",
-            ],
+            choice_dict={
+                "Bind An Instance": partial(InstanceSelectionScreen, flow_mode="bind"),
+                "Start an Instance": partial(
+                    InstanceSelectionScreen, flow_mode="start"
+                ),
+                "Stop An Instance": partial(InstanceSelectionScreen, flow_mode="stop"),
+                "Delete An Instance": partial(
+                    InstanceSelectionScreen, flow_mode="delete"
+                ),
+            },
             header="Welcome to Tabsdata. Select an Option to get started below",
         )
 
@@ -463,9 +490,15 @@ class PortConfigScreen(Screen):
         overflow-y: auto;
     }
 
-#     Input {
-#   height: 5;      
-# }
+    .input_container Input {
+    width: auto;
+    }
+
+Checkbox:focus > .toggle--button {
+    color: $accent;
+}
+
+
     """
 
     def __init__(self, instance) -> None:
@@ -485,20 +518,22 @@ class PortConfigScreen(Screen):
             Vertical(
                 Horizontal(
                     Label(
-                        "What Would Like to call your Tabsdata Instance:",
+                        "Instance Name:",
                         id="title-instance",
                     ),
                     Input(
                         placeholder=self.placeholder,
                         validate_on=["submitted"],
+                        disabled=True,
                         validators=[
                             input_validators.ValidInstanceName(self.app, self.instance)
                         ],
+                        compact=True,
                         id="instance-input",
                         classes="inputs",
                     ),
+                    Pretty("", id="instance-message"),
                 ),
-                Pretty("", id="instance-message"),
                 id="instance-container",
                 classes="input_container",
             ),
@@ -509,6 +544,7 @@ class PortConfigScreen(Screen):
                         placeholder=str(self.instance.arg_ext or ""),
                         restrict=r"\d*",
                         max_length=5,
+                        compact=True,
                         validate_on=["submitted"],
                         validators=[
                             input_validators.ValidExtPort(self.app, self.instance)
@@ -516,8 +552,8 @@ class PortConfigScreen(Screen):
                         id="ext-input",
                         classes="inputs",
                     ),
+                    Pretty("", id="ext-message"),
                 ),
-                Pretty("", id="ext-message"),
                 id="ext-container",
                 classes="input_container",
             ),
@@ -528,6 +564,7 @@ class PortConfigScreen(Screen):
                         placeholder=str(self.instance.arg_int or ""),
                         validate_on=["submitted"],
                         restrict=r"\d*",
+                        compact=True,
                         max_length=5,
                         validators=[
                             input_validators.ValidIntPort(self.app, self.instance)
@@ -535,13 +572,35 @@ class PortConfigScreen(Screen):
                         id="int-input",
                         classes="inputs",
                     ),
+                    Pretty("", id="int-message"),
                 ),
-                Pretty("", id="int-message"),
                 id="int-container",
                 classes="input_container",
             ),
-            Static(""),
+            Vertical(
+                Horizontal(
+                    Label("Use HTTPS:", id="https-label"),
+                    Checkbox(
+                        value=getattr(self.instance, "use_https", False),
+                        compact=True,
+                        id="https-checkbox",
+                        classes="inputs",
+                    ),
+                ),
+                id="https-container",
+                classes="input_container",
+            ),
+            Vertical(
+                Button(
+                    label="Submit",
+                    id="submit-button",
+                    classes="submit-button",
+                ),
+                id="submit-container",
+                classes="button_container",
+            ),
         )
+
         yield Footer()
 
     def set_visibility(self):
@@ -549,20 +608,27 @@ class PortConfigScreen(Screen):
         instance_container = self.query_one("#instance-container")
         ext_container = self.query_one("#ext-container")
         int_container = self.query_one("#int-container")
+        self.input_fields = [
+            i for i in self.query("Input, Checkbox, Button") if i.disabled != True
+        ]
+
+        input_messages = self.query(".input_container Pretty")
 
         instance_input = self.query_one("#instance-input")
         ext_input = self.query_one("#ext-input")
         int_input = self.query_one("#int-input")
 
-        for i in input_containers:
+        # for i in input_containers:
+        #     i.display = False
+
+        for i in input_messages:
             i.display = False
 
         if self.instance.name == "_Create_Instance":
-            instance_container.display = True
             self.set_focus(instance_input)
+            instance_input.disabled = False
             return
 
-        ext_container.display = True
         self.set_focus(ext_input)
         return
 
@@ -572,71 +638,82 @@ class PortConfigScreen(Screen):
     def on_screen_resume(self, event) -> None:
         self.set_visibility()
 
-    @on(Input.Submitted, "#instance-input")
-    def handle_instance_input(self, event: Input.Submitted) -> None:
-        value = event.value
-        if value == "":
-            value = "tabsdata"
-            event.input.value = value  # update UI
-            validation_result = event.input.validate(
-                value
-            )  # re-run validators with new value
-        else:
-            validation_result = event.validation_result
-
-        if not validation_result.is_valid:
-            ext_message = self.query_one("#instance-message")
-            ext_message.update(validation_result.failure_descriptions)
-            event.input.clear()
-        else:
-            self.instance.name = value
-            ext_message = self.query_one("#instance-message")
-            ext_message.update(f"Instance Name Set to {value}")
-            ext_container = self.query_one("#ext-container")
-            ext_input = self.query_one("#ext-input")
-            ext_container.display = True
-            self.set_focus(ext_input)
-
-    @on(Input.Submitted, "#ext-input")
-    async def handle_ext_input(self, event: Input.Submitted) -> None:
-        value = event.value
-        if value == "":
-            value = self.instance.arg_ext
-            event.input.value = value
-            await event.input.action_submit()
+    def on_key(self, event):
+        key_mapping = {"up": -1, "down": 1}
+        if self.screen.focused not in self.input_fields:
             return
+        focused_index = self.input_fields.index(self.screen.focused)
+        if event.key in key_mapping:
+            next_index = (focused_index + key_mapping[event.key]) % len(
+                self.input_fields
+            )
+            self.set_focus(self.input_fields[next_index])
 
-        if not event.validation_result.is_valid:
-            ext_message = self.query_one("#ext-message")
-            ext_message.update(event.validation_result.failure_descriptions)
-            event.input.clear()
-        else:
-            self.instance.arg_ext = value
-            ext_message = self.query_one("#ext-message")
-            ext_message.update(f"External Port Set to {value}")
-            int_container = self.query_one("#int-container")
-            int_input = self.query_one("#int-input")
-            int_container.display = True
-            self.set_focus(int_input)
-
-    @on(Input.Submitted, "#int-input")
-    async def handle_int_input(self, event: Input.Submitted) -> None:
+    @on(Input.Submitted, ".inputs")
+    def validate_input(self, event: Input.Submitted):
         value = event.value
+        input_widget = event.input
         if value == "":
-            value = self.instance.arg_int
-            event.input.value = value
-            await event.input.action_submit()
-            return
-
-        if not event.validation_result.is_valid:
-            ext_message = self.query_one("#int-message")
-            ext_message.update(event.validation_result.failure_descriptions)
-            event.input.clear()
+            value = input_widget.placeholder
+        validation_result = input_widget.validate(value)
+        if validation_result.is_valid == False:
+            self.app.notify(
+                f"❌ {validation_result.failure_descriptions}.",
+                severity="error",
+            )
+            message = input_widget.parent.query_one("Pretty")
+            message.update(validation_result.failure_descriptions)
+            message.display = True
         else:
-            self.instance.arg_int = value
-            ext_message = self.query_one("#int-message")
-            ext_message.update(f"External Port Set to {value}")
-            self.app.handle_api_response(self, self.instance)
+            message = input_widget.parent.query_one("Pretty")
+            message.update("[Validation Passed]")
+            message.display = True
+            key_event = Key(key="down", character=None)
+            self.on_key(key_event)
+        return
+
+    @on(Button.Pressed, "#submit-button")
+    def handle_submission_request(self, event: Button.Pressed):
+        fields = [i for i in self.query("Input") if len(i.validators) > 0]
+        validation_passed = True
+        new = {}
+        for i in fields:
+            i: Input
+            validation_result = i.validate(value=i.value)
+            if validation_result.is_valid == False:
+                self.app.notify(
+                    f"❌ {validation_result.failure_descriptions}.",
+                    severity="error",
+                )
+                message = i.parent.query_one("Pretty")
+                message.update(validation_result.failure_descriptions)
+                message.display = True
+                validation_passed = False
+        if validation_passed:
+            values = [
+                i.value if i.value != "" else i.placeholder
+                for i in self.query("Input.inputs")
+            ]
+            values.append(self.query_one("Checkbox.inputs").value or False)
+            print(values)
+            new = {
+                "name": values[0] != self.instance.name,
+                "arg_ext": values[1] != self.instance.arg_ext,
+                "arg_int": values[2] != self.instance.arg_int,
+                "use_https": values[3] != self.instance.use_https,
+            }
+            print(new)
+            self.instance.name = values[0]
+            self.instance.arg_ext = values[1]
+            self.instance.arg_int = values[2]
+            self.instance.use_https = values[3]
+            print(self.instance.use_https)
+            if self.app.flow_mode == "bind":
+                self.app.push_screen(
+                    BindAndStartInstance(current=self.instance, new=new)
+                )
+            elif self.app.flow_mode == "start":
+                self.app.push_screen(StartInstance(current=self.instance, new=new))
 
 
 @dataclass
@@ -747,7 +824,7 @@ class SequentialTasksScreenTemplate(Screen):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-btn":
-            self.app.handle_api_response(self)
+            self.app.push_screen(MainScreen())
 
     def log_line(self, task: str | None, msg: str) -> None:
         if task:
@@ -888,8 +965,9 @@ class SequentialTasksScreenTemplate(Screen):
 
 
 class BindAndStartInstance(SequentialTasksScreenTemplate):
-    def __init__(self, instance) -> None:
-        self.instance = instance
+    def __init__(self, current, new) -> None:
+        self.instance = current
+        self.new = new
         self.instance.working = True
 
         tasks = [
@@ -920,13 +998,16 @@ class BindAndStartInstance(SequentialTasksScreenTemplate):
     def conclude_tasks(self, status=None):
         super().conclude_tasks()
         manage_working_instance(self.app.session, self.instance)
+        print(self.instance)
         self.app.session.merge(self.instance)
         self.app.session.commit()
 
 
 class StartInstance(SequentialTasksScreenTemplate):
-    def __init__(self, instance) -> None:
-        self.instance = instance
+    def __init__(self, current, new) -> None:
+        self.instance = current
+        self.new = new
+        self.instance.working = True
 
         tasks = [
             TaskSpec(
@@ -951,8 +1032,10 @@ class StartInstance(SequentialTasksScreenTemplate):
 
 
 class StopInstance(SequentialTasksScreenTemplate):
-    def __init__(self, instance) -> None:
-        self.instance = instance
+    def __init__(self, current, new) -> None:
+        self.instance = current
+        self.new = new
+        self.instance.working = False
 
         tasks = [
             TaskSpec(
@@ -962,6 +1045,36 @@ class StopInstance(SequentialTasksScreenTemplate):
             TaskSpec(
                 "Stopping Tabsdata instance",
                 partial(instance_tasks.stop_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Checking Server Status",
+                partial(instance_tasks.run_tdserver_status, self, self.instance),
+            ),
+        ]
+
+        super().__init__(tasks)
+
+    def conclude_tasks(self):
+        super().conclude_tasks()
+        self.instance.working = False
+        self.app.session.merge(self.instance)
+        self.app.session.commit()
+
+
+class DeleteInstance(SequentialTasksScreenTemplate):
+    def __init__(self, current, new) -> None:
+        self.instance = current
+        self.new = new
+        self.instance.working = False
+
+        tasks = [
+            TaskSpec(
+                "Preparing Instance",
+                partial(instance_tasks.prepare_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Deleting Tabsdata instance",
+                partial(instance_tasks.delete_instance, self, self.instance),
             ),
             TaskSpec(
                 "Checking Server Status",

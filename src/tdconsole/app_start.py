@@ -9,6 +9,7 @@ from tdconsole.core.find_instances import (
 )
 import logging
 from typing import Optional, Dict, Any, List
+from textual.events import ScreenResume, Key
 from textual.containers import VerticalScroll
 
 from textual.widgets import Static
@@ -43,7 +44,7 @@ install(
 class NestedMenuApp(App):
     CSS = """
     * {
-   height: auto;
+    height: auto;
     }
     ListView {
     height: auto;
@@ -71,7 +72,8 @@ class NestedMenuApp(App):
         process_response(self, "_mount")
 
     def action_go_back(self):
-        self.pop_screen()
+        if len(self.screen_stack) > 2:
+            self.pop_screen()
         # self.install_screen(active_screen_class(), active_screen_name)
 
     def handle_api_response(self, screen: Screen, label: str | None = None) -> None:

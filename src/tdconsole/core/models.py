@@ -20,6 +20,7 @@ class Instance(Base):
     arg_int = Column(String, nullable=True, default="2458")
     private_ip = Column(String, nullable=True, default="127.0.0.1")
     public_ip = Column(String, nullable=True, default="127.0.0.1")
+    use_https = Column(Boolean, nullable=True, default=False)
 
     @hybrid_property
     def ext_socket(self):

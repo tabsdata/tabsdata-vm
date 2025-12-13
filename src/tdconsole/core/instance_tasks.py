@@ -24,6 +24,23 @@ async def stop_instance(runner, instance, label=None) -> int:
     return code
 
 
+async def delete_instance(runner, instance, label=None) -> int:
+    """Delete a running Tabsdata instance."""
+    runner.log_line(label, f"Deleting instance {instance.name}...")
+    if instance.status == "Running":
+        await stop_instance(runner, instance)
+    code = await runner.run_logged_subprocess(
+        label,
+        "tdserver",
+        "delete",
+        "--instance",
+        instance.name,
+        "--force",
+    )
+    runner.log_line(label, f"Stop command exited with code {code}")
+    return code
+
+
 async def tabsdata_login(runner, instance, label=None) -> int:
     """Login to a Tabsdata Instance"""
     runner.log_line(label, f"Logging User into {instance.name}...")
@@ -95,8 +112,14 @@ async def prepare_instance(runner, instance, label=None) -> int:
     - If status is "Not Created" -> create it
     - Otherwise -> no op
     """
-    handler = STATUS_HANDLERS.get(instance.status, noop_instance)
-    return await handler(runner, instance, label)
+    if instance.status == "Not Created":
+        return await create_instance(runner, instance, label)
+    elif runner.new["arg_ext"] == False and runner.new["arg_int"] == False:
+        return await noop_instance(runner, instance, label)
+    elif instance.status == "Running":
+        return await stop_instance(runner, instance, label)
+    else:
+        return await noop_instance(runner, instance, label)
 
 
 # ------------------------------------------------------------
@@ -123,22 +146,24 @@ async def bind_ports(runner, instance, label=None) -> None:
     runner.log_line(label, f"Updating port config at {config_path}")
 
     # external
-    cfg_ext = set_yaml_value(
-        path=config_path,
-        key="addresses",
-        value=f"127.0.0.1:{instance.arg_ext}",
-        value_type="list",
-    )
-    runner.log_line(label, f"Set external port -> {cfg_ext}")
+    if runner.new["arg_ext"] is True:
+        cfg_ext = set_yaml_value(
+            path=config_path,
+            key="addresses",
+            value=f"127.0.0.1:{instance.arg_ext}",
+            value_type="list",
+        )
+        runner.log_line(label, f"Set external port -> {cfg_ext}")
 
     # internal
-    cfg_int = set_yaml_value(
-        path=config_path,
-        key="internal_addresses",
-        value=f"127.0.0.1:{instance.arg_int}",
-        value_type="list",
-    )
-    runner.log_line(label, f"Set internal port -> {cfg_int}")
+    if runner.new["arg_int"] is True:
+        cfg_int = set_yaml_value(
+            path=config_path,
+            key="internal_addresses",
+            value=f"127.0.0.1:{instance.arg_int}",
+            value_type="list",
+        )
+        runner.log_line(label, f"Set internal port -> {cfg_int}")
 
 
 # ------------------------------------------------------------
