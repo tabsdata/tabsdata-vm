@@ -1,87 +1,47 @@
 from __future__ import annotations
-from textual.app import App, ComposeResult
-from textual.screen import Screen
-from textual.widgets import ListView, ListItem, Label, Static, Button
-from pathlib import Path
-from tdconsole.textual_assets.spinners import SpinnerWidget
-from typing import Awaitable, Callable, List, Iterable
-from textual.widgets import RichLog, DirectoryTree, Pretty, Tree
-from textual.containers import Center
-from tdconsole.core import input_validators
-from textual import on
-from sqlalchemy.orm import Session
-from textual.events import Key, ScreenResume
-from textual.reactive import reactive
 
 import ast
-
-from tdconsole.core.find_instances import (
-    sync_filesystem_instances_to_db,
-    instance_name_to_instance,
-    sync_filesystem_instances_to_db,
-)
-import logging
-from typing import Optional, Dict, Any, List
-from textual.containers import VerticalScroll, Container
+import asyncio
+import asyncio.subprocess
+import random
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from typing import Awaitable, Callable, Iterable, List, Optional
 
-from textual.widgets import Static
-
+from rich.align import Align
 from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
-from rich.align import Align
-
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.widgets import Footer
-
-from textual.app import App, ComposeResult
-from textual.screen import Screen
-from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Static
-
-
-from typing import Optional, Dict, Any, List
-
+from sqlalchemy.orm import Session
+from textual import on
 from textual.app import ComposeResult
+from textual.containers import Center, Container, Horizontal, Vertical, VerticalScroll
+from textual.events import Key, ScreenResume
+from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Input, Label, Static, Footer, Checkbox
-from textual.containers import Vertical, VerticalScroll
-from rich.text import Text
-from typing import Optional, Dict, List, Union
-
-import asyncio.subprocess
-import random
-import asyncio
-from tdconsole.core.yaml_getter_setter import get_yaml_value, set_yaml_value
-from functools import partial
-
-from tdconsole.core.find_instances import (
-    sync_filesystem_instances_to_db as sync_filesystem_instances_to_db,
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DirectoryTree,
+    Footer,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Pretty,
+    RichLog,
+    Static,
 )
-import logging
-from pathlib import Path
-from tdconsole.textual_assets.textual_instance_config import (
-    name_in_use,
-    port_in_use,
-    get_running_ports,
-    validate_port,
+from textual.widgets._tree import TreeNode
+
+from tdconsole.core import input_validators
+from tdconsole.core.find_instances import (
+    instance_name_to_instance,
+    sync_filesystem_instances_to_db,
 )
 from tdconsole.core.models import Instance
-
-
-from textual.app import ComposeResult
-from textual.screen import Screen
-from textual.widgets import Static
-
-
-from textual.app import ComposeResult
-from textual.screen import Screen
-from textual.widgets import Static, Button
-from textual.containers import Horizontal, Vertical
-import os
-from textual.widgets._tree import TreeNode
+from tdconsole.textual_assets.spinners import SpinnerWidget
 
 
 class BSOD(Screen):
@@ -181,17 +141,17 @@ class InstanceWidget(Static):
         inst = self.inst
 
         status_color = "#e4e4e6"
-        status_line = f"○ No Instance Selected"
-        line1 = f"No External Running Port"
-        line2 = f"No Internal Running Port"
+        status_line = "○ No Instance Selected"
+        line1 = "No External Running Port"
+        line2 = "No Internal Running Port"
 
         if inst is None:
             pass
         elif inst.name == "_Create_Instance":
             status_color = "#1F66D1"
-            status_line = f"Create a New Instance"
-            line1 = f""
-            line2 = f""
+            status_line = "Create a New Instance"
+            line1 = ""
+            line2 = ""
         elif inst.status == "Running":
             status_color = "#22c55e"
             status_line = f"{inst.name}  ● Running"
