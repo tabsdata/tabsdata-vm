@@ -11,13 +11,13 @@ from tdconsole.core import input_validators
 from textual import on
 from sqlalchemy.orm import Session
 from textual.events import Key, ScreenResume
+from textual.reactive import reactive
 
 import ast
 
 from tdconsole.core.find_instances import (
     sync_filesystem_instances_to_db,
     instance_name_to_instance,
-    manage_working_instance,
     sync_filesystem_instances_to_db,
 )
 import logging
@@ -170,8 +170,8 @@ from tdconsole.core import instance_tasks
 class InstanceWidget(Static):
     """Rich panel showing the current working instance."""
 
-    def __init__(self, inst: Optional[str] = None):
-        super().__init__()
+    def __init__(self, inst: Optional[str] = None, **kwargs):
+        super().__init__(**kwargs)
         if isinstance(inst, str):
             inst = instance_name_to_instance(inst)
         self.inst = inst
@@ -219,18 +219,14 @@ class InstanceWidget(Static):
 
 
 class CurrentInstanceWidget(InstanceWidget):
-    def __init__(self, inst: Optional[str] = None):
-        sync_filesystem_instances_to_db(app=self.app)
-        super().__init__()
-        if isinstance(inst, str):
-            inst = instance_name_to_instance(inst)
-        working_instance = self.app.app_query_session("instances", working=True)
-        if working_instance is None:
-            self.inst = inst
-        else:
-            self.inst = working_instance
+    inst = reactive(None)
+
+    def __init__(self, instance: Optional[str] = None, **kwargs):
+        super().__init__(**kwargs)
+        self.instance = instance
 
     def render(self) -> RenderableType:
+
         # inner instance panel
         instance_panel = self._make_instance_panel()
 
@@ -248,6 +244,16 @@ class CurrentInstanceWidget(InstanceWidget):
         )
         return Align.center(outer)
 
+    def resolve_working_instance(self, instance=None):
+        if isinstance(instance, str):
+            instance = instance_name_to_instance(instance)
+        sync_filesystem_instances_to_db(app=self.app)
+        working_instance = self.app.app_query_session("instances", working=True)
+        if working_instance is None:
+            self.inst = instance
+        else:
+            self.inst = working_instance
+
 
 class LabelItem(ListItem):
     def __init__(self, label: str, override_label=None) -> None:
@@ -264,24 +270,23 @@ class LabelItem(ListItem):
         yield self.front
 
 
-# push instance
-
-
 class ListScreenTemplate(Screen):
     def __init__(self, choice_dict=None, header="Select a File: "):
         super().__init__()
         self.choice_dict = choice_dict
         self.choices = list(choice_dict.keys())
         self.header = header
-        self.app.working_instance = self.app.app_query_session(
-            "instances", working=True
-        )
+        # self.app.working_instance = self.app.app_query_session(
+        #     "instances", working=True
+        # )
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             if self.header is not None:
                 yield Label(self.header, id="listHeader")
-            yield CurrentInstanceWidget(self.app.working_instance)
+            yield CurrentInstanceWidget(
+                self.app.working_instance, id="CurrentInstanceWidget"
+            )
             yield self.list_items()
             yield Footer()
 
@@ -304,8 +309,13 @@ class ListScreenTemplate(Screen):
         else:
             self.app.push_screen(BSOD())
 
+    @on(ScreenResume)
+    def refresh_current_instance_widget(self, event: ScreenResume):
+        widget = self.query_one("#CurrentInstanceWidget")
+        widget.resolve_working_instance()
 
-class InstanceSelectionScreen(ListScreenTemplate):  ##############
+
+class InstanceSelectionScreen(ListScreenTemplate):
     BINDINGS = [
         ("enter", "press_close", "Done"),
     ]
@@ -400,22 +410,12 @@ class MainScreen(ListScreenTemplate):
             },
         )
 
-    @on(ListView.Selected)
-    def handle_api_response(self, event: ListView.Selected):
-        value = event.item.label
-        if value == "Asset Management":
-            self.app.push_screen(AssetManagementScreen())
-
     @on(ScreenResume)
     def handle_old_screens(self, event: ScreenResume):
         screen_stack = self.app.screen_stack
-        print("checking stack...")
         if isinstance(screen_stack[-1], MainScreen) and len(screen_stack) > 2:
-            print(screen_stack)
             while len(self.app.screen_stack) > 2:
                 self.app.pop_screen()
-                print("popped_screen")
-            print(self.app.screen_stack)
 
 
 class AssetManagementScreen(ListScreenTemplate):
@@ -695,19 +695,16 @@ Checkbox:focus > .toggle--button {
                 for i in self.query("Input.inputs")
             ]
             values.append(self.query_one("Checkbox.inputs").value or False)
-            print(values)
             new = {
                 "name": values[0] != self.instance.name,
                 "arg_ext": values[1] != self.instance.arg_ext,
                 "arg_int": values[2] != self.instance.arg_int,
                 "use_https": values[3] != self.instance.use_https,
             }
-            print(new)
             self.instance.name = values[0]
             self.instance.arg_ext = values[1]
             self.instance.arg_int = values[2]
             self.instance.use_https = values[3]
-            print(self.instance.use_https)
             if self.app.flow_mode == "bind":
                 self.app.push_screen(
                     BindAndStartInstance(current=self.instance, new=new)
@@ -997,8 +994,7 @@ class BindAndStartInstance(SequentialTasksScreenTemplate):
 
     def conclude_tasks(self, status=None):
         super().conclude_tasks()
-        manage_working_instance(self.app.session, self.instance)
-        print(self.instance)
+        self.instance.working = True
         self.app.session.merge(self.instance)
         self.app.session.commit()
 

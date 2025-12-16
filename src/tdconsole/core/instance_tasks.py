@@ -2,7 +2,6 @@
 
 from pathlib import Path
 from tdconsole.core.yaml_getter_setter import set_yaml_value
-from tdconsole.core.find_instances import manage_working_instance
 
 
 # ------------------------------------------------------------
@@ -44,12 +43,13 @@ async def delete_instance(runner, instance, label=None) -> int:
 async def tabsdata_login(runner, instance, label=None) -> int:
     """Login to a Tabsdata Instance"""
     runner.log_line(label, f"Logging User into {instance.name}...")
+    https_config = "https://" if instance.use_https is True else ""
     code = await runner.run_logged_subprocess(
         label,
         "td",
         "login",
         "--server",
-        f"{instance.public_ip}:{instance.arg_ext}",
+        f"{https_config}{instance.public_ip}:{instance.arg_ext}",
         "--user",
         "admin",
         "--role",

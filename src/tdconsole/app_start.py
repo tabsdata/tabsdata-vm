@@ -7,6 +7,7 @@ from tdconsole.textual_assets.api_processor import process_response
 from tdconsole.core.find_instances import (
     sync_filesystem_instances_to_db as sync_filesystem_instances_to_db,
 )
+from textual.reactive import reactive
 import logging
 from typing import Optional, Dict, Any, List
 from textual.events import ScreenResume, Key
@@ -34,6 +35,9 @@ from tdconsole.core.models import Instance, get_model_by_tablename
 from rich.traceback import install
 import textual
 import sqlalchemy
+from sqlalchemy import inspect
+from tdconsole.core import events
+from tdconsole.core import tabsdata_api
 
 install(
     show_locals=False,  # or True if you like locals
@@ -61,11 +65,12 @@ class NestedMenuApp(App):
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+b", "go_back", "Go Back"),
     ]
+    working_instance = reactive(None, init=False)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.session = start_session()[0]
-        instance = query_session(self.session, Instance)
+        self.session.info["app"] = self
 
     def on_mount(self) -> None:
         # start with a MainMenu instance
@@ -84,6 +89,30 @@ class NestedMenuApp(App):
         session = self.session
         query = query_session(session, model, limit, *conditions, **filters)
         return query
+
+    def watch_working_instance(self, old, new):
+        old = (
+            None
+            if old is None
+            else {
+                attr.key: getattr(old, attr.key)
+                for attr in inspect(old).mapper.column_attrs
+            }
+        )
+        new = (
+            None
+            if new is None
+            else {
+                attr.key: getattr(new, attr.key)
+                for attr in inspect(new).mapper.column_attrs
+            }
+        )
+        if new != old and new != None:
+            self.handle_tabsdata_server_connection()
+            print(self.tabsdata_server)
+
+    def handle_tabsdata_server_connection(self):
+        self.tabsdata_server = tabsdata_api.initialize_tabsdata_server_connection(self)
 
     @on(ListView.Highlighted)
     async def on_select_highlighted(self, event: ListView.Highlighted):

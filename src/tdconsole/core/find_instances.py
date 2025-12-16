@@ -228,20 +228,20 @@ def query_session(session, model, limit=None, *conditions, **filters):
     return query.all()
 
 
-def manage_working_instance(session, instance):
-    # Make sure we have a session-attached object
-    db_instance = session.merge(instance)
+# def manage_working_instance(session, instance):
+#     # Make sure we have a session-attached object
+#     db_instance = session.merge(instance)
 
-    # Clear working on all others
-    (
-        session.query(Instance)
-        .filter(Instance.name != db_instance.name, Instance.working.is_(True))
-        .update({Instance.working: False}, synchronize_session=False)
-    )
+#     # Clear working on all others
+#     (
+#         session.query(Instance)
+#         .filter(Instance.name != db_instance.name, Instance.working.is_(True))
+#         .update({Instance.working: False}, synchronize_session=False)
+#     )
 
-    db_instance.working = True
-    session.commit()
-    return True
+#     db_instance.working = True
+#     session.commit()
+#     return True
 
 
 # session = start_session()
