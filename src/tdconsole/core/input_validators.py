@@ -68,6 +68,11 @@ class ValidExtPort(Validator):
             return self.success()
 
 
+class PlaeholderValidator(Validator):
+    def validate(self, value: int) -> ValidationResult:
+        return self.success()
+
+
 class ValidIntPort(ValidExtPort):
     def validate(self, value: int) -> ValidationResult:
         if value == self.instance.arg_ext:

@@ -13,7 +13,7 @@ from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 from sqlalchemy.orm import Session
-from tabsdata.api.tabsdata_server import Collection, TabsdataServer
+from tabsdata.api.tabsdata_server import Collection, Function, TabsdataServer
 from textual import events, on, work
 from textual.app import ComposeResult
 from textual.containers import Center, Container, Horizontal, Vertical, VerticalScroll
@@ -77,6 +77,37 @@ class ExitBar(Container):
             self.app.screen.dismiss(None)
         else:
             self.app.exit()
+
+
+class RefreshBar(Container):
+    DEFAULT_CSS = """
+    RefreshBar {
+        width: 3;
+        min-width: 3;
+        height: 1;
+    }
+    #refresh-btn {
+        color: white;
+        background: transparent;
+        width: 3;
+        min-width: 3;
+        height: 1;
+        padding: 0 1;
+    }
+    .refresh-spacer {
+        width: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("↻", id="refresh-btn")
+
+    @on(Button.Pressed, "#refresh-btn")
+    def on_refresh_pressed(self, event: Button.Pressed) -> None:
+        try:
+            self.screen.query_one(InstanceInfoPanel).refresh(recompose=True)
+        except:
+            pass
 
 
 class BSOD(Screen):
@@ -292,6 +323,150 @@ class CollectionModal(ModalScreen):
             self.app.notify(f"{event.validation_result.failure_descriptions}")
 
 
+class FunctionModal(ModalScreen):
+    CSS = """
+    FunctionModal {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        background: rgba(0,0,0,0.25);
+    }
+
+    #popup {
+        width: 60%;
+        height: 80%;
+        border: round $primary;
+        background: $panel;
+        padding: 1 2;
+    }
+
+    #title {
+        margin-bottom: 1;
+    }
+
+    #popup > ListView {
+        width: 100%;
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, server, collection, function) -> None:
+        super().__init__()
+        self.server = server
+        self.collection = collection
+        self.function = function
+        self.collection_name = "No Collection provided"
+        if self.collection is not None:
+            self.collection_name = self.collection.name
+
+    def compose(self) -> ComposeResult:
+        with Container(id="popup"):
+            yield ExitBar(mode="dismiss")
+            if isinstance(self.collection, Function):
+                options = ["Delete Function", "Trigger Function"]
+                yield Static(
+                    f"What would you like to do with the {self.function.name} function?",
+                    id="title",
+                )
+                yield ListView(*[LabelItem(o) for o in options])
+            else:
+                yield Static(
+                    "What would you like to call your function?",
+                    id="title",
+                )
+                yield Vertical(
+                    Horizontal(
+                        Label(
+                            "Collection Name:",
+                            id="collection-name-label",
+                        ),
+                        Input(
+                            placeholder=self.collection_name,
+                            disabled=True,
+                            compact=True,
+                            id="collection-name-input",
+                            classes="inputs",
+                        ),
+                        Pretty("", id="collection-message"),
+                    ),
+                    id="collection-container",
+                    classes="input_container",
+                )
+                yield Vertical(
+                    Horizontal(
+                        Label("Function Name", id="function-name-label"),
+                        Input(
+                            compact=True,
+                            validate_on=["submitted"],
+                            validators=[input_validators.PlaeholderValidator()],
+                            id="function-name-input",
+                            classes="inputs",
+                        ),
+                        Pretty("", id="function-name-message"),
+                    ),
+                    id="function-name-container",
+                    classes="input_container",
+                )
+                yield Vertical(
+                    Horizontal(
+                        Label("Function Path", id="function-path-label"),
+                        Input(
+                            compact=True,
+                            validate_on=["submitted"],
+                            validators=[input_validators.PlaeholderValidator()],
+                            id="function-path-input",
+                            classes="inputs",
+                        ),
+                        Pretty("", id="function-path-message"),
+                    ),
+                    id="function-path-container",
+                    classes="input_container",
+                )
+                yield Vertical(
+                    Horizontal(
+                        Label("Function Body Name", id="function-body-name-label"),
+                        Input(
+                            compact=True,
+                            validate_on=["submitted"],
+                            validators=[input_validators.PlaeholderValidator()],
+                            id="function-vody-name-input",
+                            classes="inputs",
+                        ),
+                        Pretty("", id="function-body-name-message"),
+                    ),
+                    id="function-body-name-container",
+                    classes="input_container",
+                )
+                yield Vertical(
+                    Button(
+                        label="Submit",
+                        id="submit-button",
+                        classes="submit-button",
+                    ),
+                    id="submit-container",
+                    classes="button_container",
+                )
+
+    @on(ListView.Selected)
+    def _picked(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        if selected == "Delete Collection":
+            server: TabsdataServer = self.server
+            delete_collection = server.delete_collection(self.collection.name)
+        self.dismiss(delete_collection)
+
+    @on(Input.Submitted)
+    def _inputed(self, event: Input.Submitted) -> None:
+        value = event.input.value
+        if event.validation_result.is_valid:
+            server: TabsdataServer = self.server
+            print(value)
+            create_collection = server.create_collection(value)
+            self.dismiss(create_collection)
+        else:
+            self.app.notify(f"{event.validation_result.failure_descriptions}")
+
+
 class InstanceInfoPanel(Horizontal):
     DEFAULT_CSS = """
 InstanceInfoPanel > Horizontal {
@@ -369,25 +544,60 @@ InstanceInfoPanel .box > ListView {
         events.Click,
         "CurrentCollectionsWidget Label, CurrentCollectionsWidget LabelItem",
     )
-    async def handle_double_click(self, event: events.Click):
+    async def handle_double_click_collection(self, event: events.Click):
         if event.button == 1 and getattr(event, "chain", 1) >= 2:
             if isinstance(event.widget, LabelItem):
                 label = event.widget
             else:
                 label = event.widget.parent
             if isinstance(label.label, (Collection, str)):
-                collection = self.handle_modal_response(self.app.tabsdata_server, label)
+                collection = self.handle_collection_modal_response(
+                    self.app.tabsdata_server, label
+                )
+                print(collection)
+                self.refresh(recompose=True)
+
+    @on(
+        events.Click,
+        "CurrentFunctionsWidget Label, CurrentFunctionsWidget LabelItem",
+    )
+    async def handle_double_click_function(self, event: events.Click):
+        if event.button == 1 and getattr(event, "chain", 1) >= 2:
+            if isinstance(event.widget, LabelItem):
+                label = event.widget
+            else:
+                label = event.widget.parent
+            if isinstance(label.label, (Function, str)):
+                collection = self.handle_function_modal_response(
+                    self.app.tabsdata_server, label
+                )
                 print(collection)
                 self.refresh(recompose=True)
 
     @work
-    async def handle_modal_response(self, server, label) -> None:
+    async def handle_collection_modal_response(self, server, label) -> None:
         print("label is")
         print(label)
         print(label.label)
         result = await self.app.push_screen_wait(
             CollectionModal(self.app.tabsdata_server, label.label)
         )
+        return result
+
+    @work
+    async def handle_function_modal_response(self, server, label) -> None:
+        print("label is")
+        print(label)
+        print(label.label)
+        print(self.selected_collection)
+        result = await self.app.push_screen_wait(
+            FunctionModal(
+                self.app.tabsdata_server,
+                getattr(label.label, "collection", self.selected_collection),
+                label.label,
+            )
+        )
+
         return result
 
     def compose(self) -> ComposeResult:
@@ -589,7 +799,7 @@ class ListScreenTemplate(Screen):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield ExitBar()
+            yield Horizontal(ExitBar(), Label("   "), RefreshBar())
             yield InstanceInfoPanel()
             yield self.list_items()
             yield Footer()
