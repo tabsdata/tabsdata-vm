@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tdconsole"
-version = "0.1.0.6"                # bump
+version = "0.1.0.7"                # bump
 description = "Interactive CLI for Tabsdata"
 readme = "README.md"
 requires-python = ">=3.12"
