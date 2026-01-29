@@ -700,7 +700,10 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
     def generate_internals(self, collections=None):
         """Converts List to a ListView"""
         server: TabsdataServer = self.app.tabsdata_server
-        collections = server.list_collections()
+        try:
+            collections = server.list_collections()
+        except:
+            collections = []
         collections.append("Create a Collection")
         choiceLabels = [
             LabelItem(getattr(i, "name", "Create a Collection"), i) for i in collections
