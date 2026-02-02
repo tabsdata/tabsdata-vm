@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from tabsdata.api.tabsdata_server import TabsdataServer
 
 from tdconsole.core.models import Collection, Function, Instance, Table
+from tdconsole.core.subprocess_runner import run_bash
 
 
 def initialize_tabsdata_server_connection(app):
@@ -13,11 +14,20 @@ def initialize_tabsdata_server_connection(app):
             password = "tabsdata"
             role = "sys_admin"
             server = TabsdataServer(socket, username, password, role)
-            return server
         else:
-            return None
+            server = None
     except:
-        return None
+        server = None
+
+    if server:
+        try:
+            run_bash(
+                f"td login --server {socket} --user {username} --role {role} --password {password}"
+            )
+            app.notify("Login Successful")
+        except:
+            app.notify("Login Failed")
+    return server
 
 
 def pull_all_collections(app):

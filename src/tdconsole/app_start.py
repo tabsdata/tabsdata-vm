@@ -50,7 +50,6 @@ class NestedMenuApp(App):
         self.session = start_session()[0]
         self.session.info["app"] = self
         self.working_instance = resolve_working_instance(app=self, session=self.session)
-        self.handle_tabsdata_server_connection()
 
     def on_mount(self) -> None:
         # start with a MainMenu instance
