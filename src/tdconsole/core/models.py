@@ -1,5 +1,4 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
-from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -74,7 +73,7 @@ class Function(Base):
         String, ForeignKey("collections.name"), nullable=False, primary_key=True
     )
     collection = relationship("Collection", back_populates="functions")
-    instance_name = association_proxy("collection", "instance_name")
+    instance_name = Column(String, primary_key=True)
 
     name = Column(String, nullable=True, primary_key=True)
 
@@ -86,7 +85,7 @@ class Table(Base):
         String, ForeignKey("collections.name"), nullable=False, primary_key=True
     )
     collection = relationship("Collection", back_populates="tables")
-    instance_name = association_proxy("collection", "instance_name")
+    instance_name = Column(String, primary_key=True)
 
     name = Column(String, nullable=True, primary_key=True)
 

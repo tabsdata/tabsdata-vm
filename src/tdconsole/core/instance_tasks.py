@@ -1,8 +1,11 @@
 # tdconsole/core/tasks/instance_tasks.py
 
 from pathlib import Path
-from tdconsole.core.yaml_getter_setter import set_yaml_value
 
+import tabsdata as td
+from packaging.version import Version
+
+from tdconsole.core.yaml_getter_setter import get_yaml_value, set_yaml_value
 
 # ------------------------------------------------------------
 # Low level instance operations
@@ -81,6 +84,43 @@ async def create_instance(runner, instance, label=None) -> int:
     )
     runner.log_line(label, f"Create command exited with code {code}")
     return code
+
+
+async def upgrade_instance(runner, instance, label=None) -> int:
+    """Create a new Tabsdata instance."""
+    runner.log_line(label, f"Checking instance version state for {instance.name}...")
+    version_path = (
+        Path.home()
+        / ".tabsdata"
+        / "instances"
+        / instance.name
+        / "workspace"
+        / "work"
+        / "etc"
+        / "server-version.yaml"
+    )
+    instance_version = get_yaml_value(version_path, "version")
+    tabsdata_version = td.__version__
+
+    runner.log_line(
+        label,
+        f"Tabsdata Version is {tabsdata_version} and Instance Version is {instance_version}...",
+    )
+    if Version(tabsdata_version) > Version(instance_version):
+        runner.log_line(label, f"Instance upgrade to {tabsdata_version} is required...")
+        if instance.status == "Running":
+            await stop_instance(runner, instance, label)
+        code = await runner.run_logged_subprocess(
+            label,
+            "tdserver",
+            "upgrade",
+            "--instance",
+            instance.name,
+        )
+        runner.log_line(label, f"Upgrade command exited with code {code}")
+        return code
+    runner.log_line(label, f"Instance is up to date at version {instance_version}...")
+    return 0
 
 
 async def noop_instance(runner, instance, label=None) -> int:

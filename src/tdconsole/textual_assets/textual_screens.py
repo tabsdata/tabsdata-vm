@@ -760,7 +760,8 @@ class CurrentTablesWidget(CurrentStateWidgetTemplate):
 
         try:
             tables = server.list_tables(selected_collection.name)
-        except:
+        except Exception as e:
+            print(e)
             tables = []
 
         tables.append("Create a Table")
@@ -1502,6 +1503,10 @@ class BindAndStartInstance(SequentialTasksScreenTemplate):
             TaskSpec(
                 "Preparing Instance",
                 partial(instance_tasks.prepare_instance, self, self.instance),
+            ),
+            TaskSpec(
+                "Checking Instance Version",
+                partial(instance_tasks.upgrade_instance, self, self.instance),
             ),
             TaskSpec(
                 "Binding Ports",

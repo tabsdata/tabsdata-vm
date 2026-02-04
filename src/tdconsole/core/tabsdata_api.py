@@ -31,24 +31,33 @@ def initialize_tabsdata_server_connection(app):
 
 
 def pull_all_collections(app):
-    server = app.tabsdata_server
-    server: TabsdataServer
-    collections = server.list_collections()
-    return collections
+    try:
+        server = app.tabsdata_server
+        server: TabsdataServer
+        collections = server.list_collections()
+        return collections
+    except:
+        return []
 
 
 def pull_functions_from_collection(app, collection):
-    server = app.tabsdata_server
-    server: TabsdataServer
-    functions = server.list_functions(collection)
-    return functions
+    try:
+        server = app.tabsdata_server
+        server: TabsdataServer
+        functions = server.list_functions(collection)
+        return functions
+    except:
+        return []
 
 
 def pull_tables_from_collection(app, collection):
-    server = app.tabsdata_server
-    server: TabsdataServer
-    tables = server.list_tables(collection)
-    return tables
+    try:
+        server = app.tabsdata_server
+        server: TabsdataServer
+        tables = server.list_tables(collection)
+        return tables
+    except:
+        return []
 
 
 def check_server_status(app, server: TabsdataServer = None):
@@ -96,7 +105,13 @@ def sync_instance_to_db(app):
     if True:
         for name, v in data.items():
             c = Collection(name=name, instance=instance)
-            c.tables = [Table(name=getattr(t, "name")) for t in v["tables"]]
-            c.functions = [Function(name=getattr(f, "name")) for f in v["functions"]]
+            c.tables = [
+                Table(name=getattr(t, "name"), instance_name=instance.name)
+                for t in v["tables"]
+            ]
+            c.functions = [
+                Function(name=getattr(f, "name"), instance_name=instance.name)
+                for f in v["functions"]
+            ]
             session.add(c)
         session.commit()
