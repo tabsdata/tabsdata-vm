@@ -15,6 +15,7 @@ from tdconsole.textual_assets.screens.widgets import (
 from tdconsole.textual_assets.textual_screens import (
     BindAndStartInstance,
     DeleteInstance,
+    HomeTabbedScreen,
     InstanceManagementScreen,
     InstanceSelectionScreen,
     MainScreen,
@@ -37,6 +38,7 @@ __all__ = [
     "InstanceWidget",
     "LabelItem",
     "MainScreen",
+    "HomeTabbedScreen",
     "InstanceManagementScreen",
     "InstanceSelectionScreen",
     "PortConfigScreen",

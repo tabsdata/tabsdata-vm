@@ -16,7 +16,7 @@ def process_response(screen: Screen, label=None):
     # 1. Initial mount from App
     if label == "_mount":
         app.flow_mode = None
-        app.push_screen(textual_screens.MainScreen())
+        app.push_screen(textual_screens.HomeTabbedScreen())
         return
 
     # 2. From the main GettingStartedScreen menu
@@ -125,6 +125,6 @@ def process_response(screen: Screen, label=None):
         # When the tasks screen finishes it should call handle_api_response(self)
         # and we just take the user back to the main menu or wherever
         app.flow_mode = None
-        app.push_screen(textual_screens.MainScreen())
+        app.push_screen(textual_screens.HomeTabbedScreen())
         return
     app.push_screen(textual_screens.BSOD())

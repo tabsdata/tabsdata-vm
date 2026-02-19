@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import asyncio.subprocess
+import os
 import random
+import shlex
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -18,11 +20,13 @@ from textual import events, on, work
 from textual.app import ComposeResult
 from textual.containers import Center, Container, Horizontal, Vertical, VerticalScroll
 from textual.events import Key, ScreenResume
+from textual.geometry import Offset, Region, Spacing
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Checkbox,
+    ContentSwitcher,
     DirectoryTree,
     Footer,
     Input,
@@ -32,10 +36,13 @@ from textual.widgets import (
     Pretty,
     RichLog,
     Static,
+    Tabs,
 )
 from textual.widgets._tree import TreeNode
+from textual_autocomplete._autocomplete import DropdownItem, TargetState
 
 from tdconsole.core import input_validators, instance_tasks, tabsdata_api
+from tdconsole.core.construct_command_trie import CliAutoComplete, Node
 from tdconsole.core.find_instances import (
     instance_name_to_instance,
     sync_filesystem_instances_to_db,
@@ -47,17 +54,28 @@ from tdconsole.textual_assets.spinners import SpinnerWidget
 class ExitBar(Container):
     DEFAULT_CSS = """
     ExitBar {
-        width: 3;
-        min-width: 3;
-        height: 1;
+        width: auto;
+        min-width: 6;
+        height: 3;
+        margin: 0;
     }
     #exit-btn {
-        color: white;
-        background: transparent;
-        width: 3;
-        min-width: 3;
-        height: 1;
-        padding: 0 1;
+        color: #eaf0fb;
+        background: #1e2531;
+        border: round #5f7087;
+        width: 5;
+        min-width: 5;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
+    #exit-btn:hover {
+        background: #2c3647;
+        border: round #8fa2bf;
+    }
+    #exit-btn:focus {
+        background: #32405a;
+        border: round #9ab2d6;
     }
     .exit-spacer {
         width: 1fr;
@@ -82,17 +100,27 @@ class ExitBar(Container):
 class RefreshBar(Container):
     DEFAULT_CSS = """
     RefreshBar {
-        width: 3;
-        min-width: 3;
-        height: 1;
+        width: auto;
+        min-width: 6;
+        height: 3;
     }
     #refresh-btn {
-        color: white;
-        background: transparent;
-        width: 3;
-        min-width: 3;
-        height: 1;
-        padding: 0 1;
+        color: #eaf0fb;
+        background: #1e2531;
+        border: round #5f7087;
+        width: 5;
+        min-width: 5;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
+    #refresh-btn:hover {
+        background: #2c3647;
+        border: round #8fa2bf;
+    }
+    #refresh-btn:focus {
+        background: #32405a;
+        border: round #9ab2d6;
     }
     .refresh-spacer {
         width: 1fr;
@@ -108,6 +136,23 @@ class RefreshBar(Container):
             self.screen.query_one(InstanceInfoPanel).refresh(recompose=True)
         except:
             pass
+
+
+class WindowControls(Horizontal):
+    DEFAULT_CSS = """
+    WindowControls {
+        width: 1fr;
+        height: auto;
+    }
+    .window-controls-spacer {
+        width: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static("", classes="window-controls-spacer")
+        yield RefreshBar()
+        yield ExitBar()
 
 
 class BSOD(Screen):
@@ -492,11 +537,14 @@ InstanceInfoPanel .box > ListView {
         self.instance = None
         self.collection_list = []
         self.selected_collection = None
+        self.selected_collection_name = None
         self.selected_function = None
+        self.selected_function_name = None
         self.function_list = []
         self.selected_function = None
         self.table_list = []
         self.selected_table = None
+        self.selected_table_name = None
         self.recompile_td_data()
         tabsdata_api.sync_instance_to_db(self.app)
 
@@ -511,9 +559,6 @@ InstanceInfoPanel .box > ListView {
 
     def refresh_widget(self):
         self.recompile_td_data()
-        self.selected_collection = None
-        self.selected_function = None
-        self.selected_table = None
         self.refresh(recompose=True)
 
     def recompile_td_data(self):
@@ -522,23 +567,28 @@ InstanceInfoPanel .box > ListView {
         self.tabsdata_server: TabsdataServer
         try:
             self.collection_list = self.tabsdata_server.list_collections()
+            self.selected_collection = None
+            if self.selected_collection_name is not None:
+                self.selected_collection = next(
+                    (
+                        item
+                        for item in self.collection_list
+                        if getattr(item, "name", item) == self.selected_collection_name
+                    ),
+                    None,
+                )
 
-            if (
-                self.selected_collection in self.collection_list
-                and self.tabsdata_server
-            ):
-                self.function_list = self.tabsdata_server.list_functions(
-                    self.selected_collection.name
-                )
-                self.table_list = self.tabsdata_server.list_tables(
-                    self.selected_collection.name
-                )
+            if self.selected_collection and self.tabsdata_server:
+                coll_name = getattr(self.selected_collection, "name", None)
+                self.function_list = self.tabsdata_server.list_functions(coll_name)
+                self.table_list = self.tabsdata_server.list_tables(coll_name)
             else:
                 self.function_list = []
                 self.table_list = []
         except:
             self.function_list = []
             self.table_list = []
+            self.selected_collection = None
 
     @on(
         events.Click,
@@ -699,16 +749,18 @@ class CurrentInstanceWidget(CurrentStateWidgetTemplate):
 class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
     def generate_internals(self, collections=None):
         """Converts List to a ListView"""
-        server: TabsdataServer = self.app.tabsdata_server
-        try:
-            collections = server.list_collections()
-        except:
-            collections = []
+        collections = list(self.parent.collection_list or [])
         collections.append("Create a Collection")
         choiceLabels = [
             LabelItem(getattr(i, "name", "Create a Collection"), i) for i in collections
         ]
         self.list = ListView(*choiceLabels)
+        selected_name = self.parent.selected_collection_name
+        if selected_name:
+            for idx, item in enumerate(collections):
+                if getattr(item, "name", item) == selected_name:
+                    self.list.index = idx
+                    break
         return self.list
 
     @on(ListView.Selected)
@@ -716,6 +768,11 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
         event.stop()
         collection = event.item.label
         self.parent.selected_collection = collection
+        self.parent.selected_collection_name = getattr(collection, "name", collection)
+        self.parent.selected_function = None
+        self.parent.selected_function_name = None
+        self.parent.selected_table = None
+        self.parent.selected_table_name = None
         self.parent.recompile_td_data()
         widgets_to_refresh = self.screen.query(".collection_dependent")
         for i in widgets_to_refresh:
@@ -726,23 +783,27 @@ class CurrentFunctionsWidget(CurrentStateWidgetTemplate):
 
     def generate_internals(self, functions=None):
         """Converts List to a ListView"""
-        server: TabsdataServer = self.app.tabsdata_server
-        selected_collection = self.parent.selected_collection
-        try:
-            functions = server.list_functions(selected_collection.name)
-        except:
-            functions = []
+        functions = list(self.parent.function_list or [])
 
         functions.append("Create a Function")
         choiceLabels = [
             LabelItem(getattr(i, "name", "Create a Function"), i) for i in functions
         ]
         self.list = ListView(*choiceLabels)
+        selected_name = self.parent.selected_function_name
+        if selected_name:
+            for idx, item in enumerate(functions):
+                if getattr(item, "name", item) == selected_name:
+                    self.list.index = idx
+                    break
         return self.list
 
     @on(ListView.Selected)
     def handle_function_selected(self, event: ListView.Selected):
         event.stop()
+        value = event.item.label
+        self.parent.selected_function = value
+        self.parent.selected_function_name = getattr(value, "name", value)
 
 
 class CurrentTablesWidget(CurrentStateWidgetTemplate):
@@ -755,25 +816,27 @@ class CurrentTablesWidget(CurrentStateWidgetTemplate):
 
     def generate_internals(self, collections=None):
         """Converts List to a ListView"""
-        server: TabsdataServer = self.app.tabsdata_server
-        selected_collection = self.parent.selected_collection
-
-        try:
-            tables = server.list_tables(selected_collection.name)
-        except Exception as e:
-            print(e)
-            tables = []
+        tables = list(self.parent.table_list or [])
 
         tables.append("Create a Table")
         choiceLabels = [
             LabelItem(getattr(i, "name", "Create a Function"), i) for i in tables
         ]
         self.list = ListView(*choiceLabels)
+        selected_name = self.parent.selected_table_name
+        if selected_name:
+            for idx, item in enumerate(tables):
+                if getattr(item, "name", item) == selected_name:
+                    self.list.index = idx
+                    break
         return self.list
 
     @on(ListView.Selected)
     def handle_table_selected(self, event: ListView.Selected):
         event.stop()
+        value = event.item.label
+        self.parent.selected_table = value
+        self.parent.selected_table_name = getattr(value, "name", value)
 
 
 class LabelItem(ListItem):
@@ -803,7 +866,7 @@ class ListScreenTemplate(Screen):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Horizontal(ExitBar(), Label("   "), RefreshBar())
+            yield WindowControls()
             yield InstanceInfoPanel()
             yield self.list_items()
             yield Footer()
@@ -935,6 +998,525 @@ class MainScreen(ListScreenTemplate):
         if isinstance(screen_stack[-1], MainScreen) and len(screen_stack) > 2:
             while len(self.app.screen_stack) > 2:
                 self.app.pop_screen()
+
+
+class BottomAwareCliAutoComplete(CliAutoComplete):
+    """Place autocomplete above the input when there is not enough room below."""
+
+    def get_search_string(self, state: TargetState) -> str:
+        # Candidates are already pre-filtered in candidates_callback.
+        # Returning an empty search string bypasses fuzzy filtering that can hide
+        # valid next-token suggestions (e.g. "td" -> "table"/"fn").
+        return ""
+
+    def should_show_dropdown(self, search_string: str) -> bool:
+        return self.option_list.option_count > 0
+
+    def _align_to_target(self) -> None:
+        x, y = self.target.cursor_screen_offset
+        dropdown = self.option_list
+        width, height = dropdown.outer_size
+        region = self.screen.scrollable_content_region
+
+        below_space = max(0, region.bottom - (y + 1))
+        above_space = max(0, y - region.y)
+        show_above = below_space < min(height, 4) and above_space > below_space
+        desired_y = y - height if show_above else y + 1
+
+        x, y, _width, _height = Region(x - 1, desired_y, width, height).constrain(
+            "inside",
+            "none",
+            Spacing.all(0),
+            region,
+        )
+        self.absolute_offset = Offset(x, y)
+
+
+class HomeTabbedScreen(Screen):
+    CSS = """
+    #home-topbar {
+        width: 1fr;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        align: left middle;
+    }
+    #home-tabs-nav {
+        width: 1fr;
+        height: 3;
+        margin: 0;
+        padding: 0;
+    }
+    #home-tabs-nav Tab {
+        height: 3;
+        margin: 0 1 0 0;
+        padding: 0 2;
+        content-align: center middle;
+        border: round #4d5c71;
+        background: #1a2230;
+        color: #cfd7e6;
+    }
+    #home-tabs-nav Tab:hover {
+        border: round #7e91ad;
+        background: #253245;
+        color: #f1f5fb;
+    }
+    #home-tabs-nav Tab.-active {
+        border: round #9db3d4;
+        background: #2f3f57;
+        color: #ffffff;
+        text-style: bold;
+    }
+    #home-controls {
+        width: auto;
+        height: 3;
+        layout: horizontal;
+        align: right middle;
+    }
+    #home-switcher {
+        height: 1fr;
+    }
+    #main-list {
+        height: 1fr;
+    }
+    #cli-pane {
+        height: 1fr;
+    }
+    #cli-prompt {
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+        color: $text-muted;
+    }
+    #cli-log {
+        height: 1fr;
+        border: round $accent;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cwd = Path.cwd()
+        self.cli_root = self._build_cli_tree()
+        self.main_choice_dict = {
+            "Instance Management": InstanceManagementScreen,
+            "Asset Management": AssetManagementScreen,
+            "Workflow Management (Not Built Yet)": None,
+            "Config Management (Not Built Yet)": None,
+            "Exit": None,
+        }
+        self.choices = list(self.main_choice_dict.keys())
+        self.cli_prompt_widget: Static | None = None
+        self.cli_log_widget: RichLog | None = None
+        self.cli_input_widget: Input | None = None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="home-topbar"):
+            yield Tabs("Main", "CLI", id="home-tabs-nav")
+            with Horizontal(id="home-controls"):
+                yield RefreshBar()
+                yield ExitBar()
+
+        with ContentSwitcher(initial="main-panel", id="home-switcher"):
+            with Vertical(id="main-panel"):
+                yield InstanceInfoPanel()
+                yield ListView(
+                    *[LabelItem(choice) for choice in self.choices], id="main-list"
+                )
+            with Vertical(id="cli-panel"):
+                with Vertical(id="cli-pane"):
+                    yield Static("", id="cli-prompt")
+                    yield RichLog(id="cli-log", wrap=True, highlight=True, markup=False)
+                    input_widget = Input(
+                        placeholder="Type a command and press Enter", id="cli-input"
+                    )
+                    yield input_widget
+                    yield BottomAwareCliAutoComplete(
+                        input_widget, candidates=self.candidates_callback
+                    )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.cli_prompt_widget = self.query_one("#cli-prompt", Static)
+        self.cli_log_widget = self.query_one("#cli-log", RichLog)
+        self.cli_input_widget = self.query_one("#cli-input", Input)
+        self._refresh_prompt()
+        self._log_line("Built-ins: cd, clear, pwd, exit")
+        self.query_one("#main-list", ListView).focus()
+
+    @on(Tabs.TabActivated, "#home-tabs-nav")
+    def on_tab_activated(self, event: Tabs.TabActivated) -> None:
+        label = str(event.tab.label)
+        switcher = self.query_one("#home-switcher", ContentSwitcher)
+        if label == "Main":
+            switcher.current = "main-panel"
+            self.query_one("#main-list", ListView).focus()
+        elif label == "CLI":
+            switcher.current = "cli-panel"
+            self.query_one("#cli-input", Input).focus()
+
+    @on(ListView.Selected, "#main-list")
+    def on_main_list_selected(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        if selected == "Exit":
+            self.app.exit()
+        elif selected in self.choices and self.main_choice_dict[selected] is not None:
+            screen = self.main_choice_dict[selected]
+            self.app.push_screen(screen())
+        else:
+            self.app.push_screen(BSOD())
+
+    @on(ScreenResume)
+    def refresh_current_instance_widget(self, event: ScreenResume):
+        self.query_one(InstanceInfoPanel).refresh_widget()
+
+    @on(Input.Submitted, "#cli-input")
+    async def on_cli_input_submitted(self, event: Input.Submitted) -> None:
+        command = event.value.strip()
+        event.input.value = ""
+        if not command:
+            return
+
+        self._log_line(f"$ {command}")
+        await self._run_command(command)
+        self._refresh_prompt()
+
+    async def _run_command(self, command: str) -> None:
+        if command == "clear":
+            if self.cli_log_widget is not None:
+                self.cli_log_widget.clear()
+            return
+        if command in {"exit", "quit"}:
+            self.app.exit()
+            return
+        if command == "pwd":
+            self._log_line(str(self.cwd))
+            return
+        if command.startswith("cd"):
+            self._handle_cd(command)
+            return
+
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self.cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=os.environ.copy(),
+        )
+        assert process.stdout is not None
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            self._log_line(line.decode(errors="replace").rstrip("\n"))
+
+        return_code = await process.wait()
+        if return_code != 0:
+            self._log_line(f"[exit code: {return_code}]")
+
+    def _handle_cd(self, command: str) -> None:
+        parts = shlex.split(command)
+        target_raw = parts[1] if len(parts) > 1 else "~"
+        target = Path(target_raw).expanduser()
+        if not target.is_absolute():
+            target = (self.cwd / target).resolve()
+
+        if not target.exists():
+            self._log_line(f"cd: no such file or directory: {target_raw}")
+            return
+        if not target.is_dir():
+            self._log_line(f"cd: not a directory: {target_raw}")
+            return
+        self.cwd = target
+
+    def _refresh_prompt(self) -> None:
+        if self.cli_prompt_widget is not None:
+            self.cli_prompt_widget.update(f"{self.cwd} $")
+
+    def _log_line(self, text: str) -> None:
+        if self.cli_log_widget is not None:
+            self.cli_log_widget.write(text)
+
+    def candidates_callback(self, state: TargetState) -> list[DropdownItem]:
+        base_items = self._pull_command_suggestions(self.cli_root, state.text)
+        active_param, current_fragment = self._active_parameter_context(state.text)
+        scope = self._command_scope(state.text)
+
+        if active_param == "--coll":
+            selected_name = self._extract_name_arg(state.text)
+            if selected_name:
+                items = self._filter_by_prefix(
+                    self._collections_for_name(selected_name, scope),
+                    current_fragment,
+                )
+            else:
+                items = self._filter_by_prefix(
+                    self._live_collection_names(),
+                    current_fragment,
+                )
+        elif active_param == "--name":
+            collection = self._extract_collection_arg(state.text)
+            if scope == "table":
+                dynamic_names = self._live_table_names(collection)
+            elif scope == "fn":
+                dynamic_names = self._live_function_names(collection)
+            else:
+                dynamic_names = sorted(
+                    set(
+                        self._live_function_names(collection)
+                        + self._live_table_names(collection)
+                    )
+                )
+            items = self._filter_by_prefix(dynamic_names, current_fragment)
+        elif active_param == "--instance":
+            items = self._filter_by_prefix(
+                self._live_instance_names(),
+                current_fragment,
+            )
+        else:
+            if self._is_partial_token_context(state.text):
+                items = self._filter_by_prefix(base_items, current_fragment)
+            else:
+                items = base_items
+
+        return [DropdownItem(item) for item in items]
+
+    def _build_cli_tree(self) -> Node:
+        root = Node("root")
+
+        td_node = Node(name="td")
+        root.add_child(td_node)
+
+        tdserver_node = Node("tdserver")
+        root.add_child(tdserver_node)
+
+        tdserver_node.add_child(["status", "start", "stop", "delete"])
+        for i in tdserver_node.children:
+            instance_node = i.add_child(Node(name="--instance", parameter=True))
+            instance_node.add_child(Node(name="__instance_value__", parameter_arg=True))
+
+        fn = td_node.add_child(Node("fn"))
+        fn_sample = fn.add_child("sample")
+        fn_schema = fn.add_child("schema")
+        fn_sample.add_child(["--coll", "--name"])
+        fn_schema.add_child(["--coll", "--name"])
+
+        table = td_node.add_child(Node("table"))
+        sample = table.add_child("sample")
+        schema = table.add_child("schema")
+        sample.add_child(["--coll", "--name"])
+        schema.add_child(["--coll", "--name"])
+
+        colls = root.recur_search("--coll")
+        for node in colls:
+            node.add_child(["__coll_value__"])
+            node.parameter = True
+            for child in node.children:
+                child.parameter_arg = True
+
+        names = root.recur_search("--name")
+        for node in names:
+            node.add_child(["__name_value__"])
+            node.parameter = True
+            for child in node.children:
+                child.parameter_arg = True
+
+        return root
+
+    def _pull_command_suggestions(self, root: Node, text: str) -> list[str]:
+        try:
+            split_text = shlex.split(text)
+        except ValueError:
+            split_text = text.split(" ")
+
+        cursor = root
+        children = cursor.children
+        param_list = []
+
+        for index, word in enumerate(split_text):
+            if not word:
+                continue
+            is_last = index == len(split_text) - 1
+            treat_as_partial = is_last and not text.endswith(" ")
+            found_child = cursor.get_child(word)
+            if treat_as_partial and found_child is not None:
+                # Exact match on the token currently being typed:
+                # keep suggestions at current level until user commits with space.
+                break
+            if not found_child:
+                if cursor.parameter is True:
+                    # Accept dynamic parameter values (not explicitly in the tree)
+                    # and continue from the parameter's parent so sibling flags
+                    # like --name can still be suggested.
+                    if cursor.parent is not None:
+                        param_list = cursor.parent.children
+                        cursor = cursor.parent
+                        children = cursor.children
+                        continue
+                    return []
+                break
+            if found_child.parameter is True:
+                param_list = cursor.children
+            if found_child.parameter_arg is True:
+                param_list = cursor.parent.children
+                cursor = cursor.parent
+            else:
+                cursor = found_child
+            children = cursor.children
+
+        results = children
+        if len(children) == 0 and len(param_list) > 0:
+            results = param_list
+
+        names = [node.name for node in results]
+        names = [name for name in names if not name.startswith("__")]
+        existing_params = [token for token in split_text if token.startswith("--")]
+        return [name for name in names if name not in existing_params]
+
+    def _safe_split(self, text: str) -> list[str]:
+        try:
+            return shlex.split(text)
+        except ValueError:
+            return [part for part in text.split(" ") if part]
+
+    def _active_parameter_context(self, text: str) -> tuple[str | None, str]:
+        tokens = self._safe_split(text)
+        if not tokens:
+            return None, ""
+
+        ends_with_space = text.endswith(" ")
+        current_fragment = "" if ends_with_space else tokens[-1]
+
+        if ends_with_space:
+            previous = tokens[-1]
+        else:
+            previous = tokens[-2] if len(tokens) > 1 else None
+
+        if previous in {"--coll", "--name", "--instance"}:
+            return previous, current_fragment
+        return None, current_fragment
+
+    def _extract_collection_arg(self, text: str) -> str | None:
+        tokens = self._safe_split(text)
+        collection: str | None = None
+        for index, token in enumerate(tokens[:-1]):
+            if token == "--coll":
+                candidate = tokens[index + 1]
+                if not candidate.startswith("--"):
+                    collection = candidate
+        return collection
+
+    def _extract_name_arg(self, text: str) -> str | None:
+        tokens = self._safe_split(text)
+        name: str | None = None
+        for index, token in enumerate(tokens[:-1]):
+            if token == "--name":
+                candidate = tokens[index + 1]
+                if not candidate.startswith("--"):
+                    name = candidate
+        return name
+
+    def _command_scope(self, text: str) -> str | None:
+        tokens = self._safe_split(text)
+        if len(tokens) < 2:
+            return None
+        if tokens[0] != "td":
+            if tokens[0] == "tdserver":
+                return "tdserver"
+            return None
+        if tokens[1] in {"table", "fn"}:
+            return tokens[1]
+        return None
+
+    def _live_collection_names(self) -> list[str]:
+        collections = tabsdata_api.pull_all_collections(self.app)
+        return sorted({getattr(item, "name", str(item)) for item in collections})
+
+    def _live_function_names(self, collection: str | None) -> list[str]:
+        if collection:
+            functions = tabsdata_api.pull_functions_from_collection(
+                self.app, collection
+            )
+            return sorted({getattr(item, "name", str(item)) for item in functions})
+
+        names: set[str] = set()
+        for coll in self._live_collection_names():
+            functions = tabsdata_api.pull_functions_from_collection(self.app, coll)
+            names.update(getattr(item, "name", str(item)) for item in functions)
+        return sorted(names)
+
+    def _live_table_names(self, collection: str | None) -> list[str]:
+        if collection:
+            tables = tabsdata_api.pull_tables_from_collection(self.app, collection)
+            return sorted({getattr(item, "name", str(item)) for item in tables})
+
+        names: set[str] = set()
+        for coll in self._live_collection_names():
+            tables = tabsdata_api.pull_tables_from_collection(self.app, coll)
+            names.update(getattr(item, "name", str(item)) for item in tables)
+        return sorted(names)
+
+    def _filter_by_prefix(self, items: list[str], prefix: str) -> list[str]:
+        if not prefix:
+            return items
+        return [item for item in items if item.startswith(prefix)]
+
+    def _collections_for_name(self, name: str, scope: str | None) -> list[str]:
+        matching_collections: list[str] = []
+        for coll in self._live_collection_names():
+            if scope == "table":
+                table_names = self._live_table_names(coll)
+                if name in table_names:
+                    matching_collections.append(coll)
+            elif scope == "fn":
+                function_names = self._live_function_names(coll)
+                if name in function_names:
+                    matching_collections.append(coll)
+            else:
+                function_names = self._live_function_names(coll)
+                table_names = self._live_table_names(coll)
+                if name in function_names or name in table_names:
+                    matching_collections.append(coll)
+        return matching_collections
+
+    def _is_partial_token_context(self, text: str) -> bool:
+        """True when the last typed token is partial and should prefix-filter candidates."""
+        if text.endswith(" "):
+            return False
+
+        tokens = self._safe_split(text)
+        if not tokens:
+            return False
+
+        cursor = self.cli_root
+        for index, token in enumerate(tokens):
+            is_last = index == len(tokens) - 1
+            found = cursor.get_child(token)
+            if not found:
+                return True
+            if is_last:
+                # Exact last-token match without trailing space is still "in progress".
+                return True
+            if found.parameter_arg is True and found.parent is not None:
+                cursor = found.parent
+            else:
+                cursor = found
+
+        # Every token resolved exactly; next-token suggestions should not be filtered.
+        return False
+
+    def _live_instance_names(self) -> list[str]:
+        try:
+            sync_filesystem_instances_to_db(app=self.app)
+        except Exception:
+            pass
+
+        try:
+            session: Session = self.app.session
+            instances = session.query(Instance).order_by(Instance.name).all()
+            return [instance.name for instance in instances]
+        except Exception:
+            return []
 
 
 class AssetManagementScreen(ListScreenTemplate):
@@ -1353,7 +1935,7 @@ class SequentialTasksScreenTemplate(Screen):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-btn":
-            self.app.push_screen(MainScreen())
+            self.app.push_screen(HomeTabbedScreen())
 
     def log_line(self, task: str | None, msg: str) -> None:
         if task:
