@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tdconsole"
-version = "0.1.1.4"                # bump
+version = "0.1.1.5"                # bump
 description = "Interactive CLI for Tabsdata"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["tabsdata", "typer", "Rich", "Textual", "InquirerPy", "psutil", "textual-dev"]
+dependencies = ["tabsdata", "typer", "Rich", "Textual", "InquirerPy", "psutil", "textual-dev", "textual_autocomplete"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
