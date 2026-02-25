@@ -200,46 +200,40 @@ def sync_filesystem_instances_to_db(app=None, session=None) -> list[Instance]:
 
     working_instance = resolve_working_instance(app, session)
 
-    with session as session:
-        for name in instance_names:
-            # Instance from filesystem only
-            fs_instance = instance_name_to_instance(name)
-            if (
-                working_instance is not None
-                and fs_instance.name == working_instance.name
-            ):
-                fs_instance.working = True
-            else:
-                fs_instance.working = False
+    for name in instance_names:
+        # Instance from filesystem only
+        fs_instance = instance_name_to_instance(name)
+        if working_instance is not None and fs_instance.name == working_instance.name:
+            fs_instance.working = True
+        else:
+            fs_instance.working = False
 
-            # Try to find existing record in DB
-            db_instance = session.query(Instance).filter_by(name=name).first()
+        # Try to find existing record in DB
+        db_instance = session.query(Instance).filter_by(name=name).first()
 
-            if db_instance is None:
-                # Create if not found
-                session.add(fs_instance)
-            else:
-                session.merge(fs_instance)
+        if db_instance is None:
+            # Create if not found
+            session.add(fs_instance)
+        else:
+            session.merge(fs_instance)
 
-        session.query(Instance).filter(~Instance.name.in_(instance_names)).delete(
-            synchronize_session=False
-        )
-        if hasattr(app, "working_instance"):
-            working_instance = app.working_instance
-            if hasattr(working_instance, "name"):
-                working_instance_name = working_instance.name
-                db_instance = (
-                    session.query(Instance)
-                    .filter_by(name=working_instance_name)
-                    .first()
-                )
-                if db_instance.status == "Not Running":
-                    app.working_instance = None
+    session.query(Instance).filter(~Instance.name.in_(instance_names)).delete(
+        synchronize_session=False
+    )
+    if hasattr(app, "working_instance"):
+        working_instance = app.working_instance
+        if hasattr(working_instance, "name"):
+            working_instance_name = working_instance.name
+            db_instance = (
+                session.query(Instance).filter_by(name=working_instance_name).first()
+            )
+            if db_instance.status == "Not Running":
+                app.working_instance = None
 
-        session.commit()
+    session.commit()
 
-        # Return database versions of instances
-        instances_in_db = session.query(Instance).order_by(Instance.name).all()
+    # Return database versions of instances
+    instances_in_db = session.query(Instance).order_by(Instance.name).all()
 
     return instances_in_db
 
@@ -254,12 +248,13 @@ def query_session(session, model, limit=None, *conditions, **filters):
     if limit is not None:
         query = query.limit(limit)
 
-    if query.all() == []:
+    results = query.all()
+    if results == []:
         return None
-    elif len(query.all()) == 1:
-        return query.all()[0]
+    if len(results) == 1:
+        return results[0]
 
-    return query.all()
+    return results
 
 
 def resolve_login_credentials(app=None):

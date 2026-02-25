@@ -9,6 +9,14 @@ import shlex
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+import sys
+import pty
+import subprocess
+import re
+import time
+import fcntl
+import termios
+import struct
 from typing import Awaitable, Callable, Iterable, List, Optional
 
 from rich.console import Group, RenderableType
@@ -18,7 +26,13 @@ from sqlalchemy.orm import Session
 from tabsdata.api.tabsdata_server import Collection, Function, TabsdataServer
 from textual import events, on, work
 from textual.app import ComposeResult
-from textual.containers import Center, Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import (
+    Center,
+    Container,
+    Horizontal,
+    Vertical,
+    VerticalScroll,
+)
 from textual.events import Key, ScreenResume
 from textual.geometry import Offset, Region, Spacing
 from textual.reactive import reactive
@@ -138,6 +152,51 @@ class RefreshBar(Container):
             pass
 
 
+class BackBar(Container):
+    DEFAULT_CSS = """
+    BackBar {
+        width: auto;
+        min-width: 6;
+        height: 3;
+    }
+    #back-btn {
+        color: #eaf0fb;
+        background: #1e2531;
+        border: round #5f7087;
+        width: 5;
+        min-width: 5;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
+    #back-btn:hover {
+        background: #2c3647;
+        border: round #8fa2bf;
+    }
+    #back-btn:focus {
+        background: #32405a;
+        border: round #9ab2d6;
+    }
+    .back-spacer {
+        width: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("←", id="back-btn")
+
+    @on(Button.Pressed, "#back-btn")
+    def on_back_pressed(self, event: Button.Pressed) -> None:
+        # Match app back behavior (if possible), otherwise pop one screen.
+        try:
+            self.app.action_go_back()
+        except Exception:
+            try:
+                self.app.pop_screen()
+            except Exception:
+                pass
+
+
 class WindowControls(Horizontal):
     DEFAULT_CSS = """
     WindowControls {
@@ -151,6 +210,7 @@ class WindowControls(Horizontal):
 
     def compose(self) -> ComposeResult:
         yield Static("", classes="window-controls-spacer")
+        yield BackBar()
         yield RefreshBar()
         yield ExitBar()
 
@@ -407,8 +467,8 @@ class FunctionModal(ModalScreen):
     def compose(self) -> ComposeResult:
         with Container(id="popup"):
             yield ExitBar(mode="dismiss")
-            if isinstance(self.collection, Function):
-                options = ["Delete Function", "Trigger Function"]
+            if isinstance(self.function, Function):
+                options = ["Trigger Function"]
                 yield Static(
                     f"What would you like to do with the {self.function.name} function?",
                     id="title",
@@ -495,10 +555,18 @@ class FunctionModal(ModalScreen):
     @on(ListView.Selected)
     def _picked(self, event: ListView.Selected) -> None:
         selected = event.item.label
-        if selected == "Delete Collection":
-            server: TabsdataServer = self.server
-            delete_collection = server.delete_collection(self.collection.name)
-        self.dismiss(delete_collection)
+        if selected == "Trigger Function":
+            function_name = getattr(self.function, "name", str(self.function))
+            collection_name = getattr(self.collection, "name", None)
+            self.dismiss(
+                {
+                    "action": "trigger",
+                    "collection": collection_name,
+                    "function": function_name,
+                }
+            )
+            return
+        self.dismiss(None)
 
     @on(Input.Submitted)
     def _inputed(self, event: Input.Submitted) -> None:
@@ -648,7 +716,29 @@ InstanceInfoPanel .box > ListView {
             )
         )
 
+        if isinstance(result, dict) and result.get("action") == "trigger":
+            self._trigger_function_cli(result)
         return result
+
+    def _trigger_function_cli(self, payload: dict) -> None:
+        collection = payload.get("collection")
+        function = payload.get("function")
+        if not collection or not function:
+            self.app.notify("Missing collection or function name.", severity="error")
+            return
+        command = f"td fn trigger --coll {collection} --name {function}"
+        home_screen = self._find_home_screen()
+        if home_screen is None:
+            self.app.notify("Home screen not available.", severity="error")
+            return
+        home_screen.run_cli_command(command, use_pty=False)
+
+    def _find_home_screen(self):
+        for screen in reversed(self.app.screen_stack):
+            if screen.__class__.__name__ == "HomeTabbedScreen":
+                return screen
+        return None
+
 
     def compose(self) -> ComposeResult:
         yield CurrentInstanceWidget(title="Current Instance", classes="box")
@@ -1092,6 +1182,17 @@ class HomeTabbedScreen(Screen):
         height: 1fr;
         border: round $accent;
     }
+    #cli-input {
+        height: 3;
+    }
+    #main-scroll {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    #main-list {
+        height: auto;
+        overflow-y: hidden;
+    }
     """
 
     def __init__(self) -> None:
@@ -1109,24 +1210,34 @@ class HomeTabbedScreen(Screen):
         self.cli_prompt_widget: Static | None = None
         self.cli_log_widget: RichLog | None = None
         self.cli_input_widget: Input | None = None
+        self._cli_screen_lines: list[str] = [""]
+        self._cli_cursor_row: int = 0
+        self._cli_cursor_col: int = 0
+        self._cli_saved_cursor: tuple[int, int] | None = None
+        self._cli_last_render: float = 0.0
+        self._cli_rows: int = 40
+        self._cli_cols: int = 120
+        self._cli_screen: list[list[str]] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="home-topbar"):
             yield Tabs("Main", "CLI", id="home-tabs-nav")
             with Horizontal(id="home-controls"):
+                yield BackBar()
                 yield RefreshBar()
                 yield ExitBar()
 
         with ContentSwitcher(initial="main-panel", id="home-switcher"):
             with Vertical(id="main-panel"):
-                yield InstanceInfoPanel()
-                yield ListView(
-                    *[LabelItem(choice) for choice in self.choices], id="main-list"
-                )
+                with VerticalScroll(id="main-scroll"):
+                    yield InstanceInfoPanel()
+                    yield ListView(
+                        *[LabelItem(choice) for choice in self.choices], id="main-list"
+                    )
             with Vertical(id="cli-panel"):
                 with Vertical(id="cli-pane"):
                     yield Static("", id="cli-prompt")
-                    yield RichLog(id="cli-log", wrap=True, highlight=True, markup=False)
+                    yield RichLog(id="cli-log", wrap=False, highlight=True, markup=False)
                     input_widget = Input(
                         placeholder="Type a command and press Enter", id="cli-input"
                     )
@@ -1181,7 +1292,7 @@ class HomeTabbedScreen(Screen):
         await self._run_command(command)
         self._refresh_prompt()
 
-    async def _run_command(self, command: str) -> None:
+    async def _run_command(self, command: str, use_pty: bool = False) -> None:
         if command == "clear":
             if self.cli_log_widget is not None:
                 self.cli_log_widget.clear()
@@ -1196,23 +1307,74 @@ class HomeTabbedScreen(Screen):
             self._handle_cd(command)
             return
 
-        process = await asyncio.create_subprocess_shell(
-            command,
-            cwd=str(self.cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=os.environ.copy(),
-        )
-        assert process.stdout is not None
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            self._log_line(line.decode(errors="replace").rstrip("\n"))
+        if use_pty:
+            master_fd, slave_fd = pty.openpty()
+            self._set_pty_winsize(master_fd, slave_fd)
+            self._init_cli_screen()
+            env = os.environ.copy()
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                cwd=str(self.cwd),
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                close_fds=True,
+            )
+            os.close(slave_fd)
 
-        return_code = await process.wait()
-        if return_code != 0:
-            self._log_line(f"[exit code: {return_code}]")
+            try:
+                while True:
+                    data = await asyncio.to_thread(os.read, master_fd, 4096)
+                    if not data:
+                        break
+                    chunk = data.decode(errors="replace")
+                    self._apply_ansi_chunk(chunk)
+            finally:
+                os.close(master_fd)
+
+            return_code = await asyncio.to_thread(process.wait)
+            self._render_cli_buffer(force=True)
+            if return_code != 0:
+                self._log_line(f"[exit code: {return_code}]")
+        else:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(self.cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=os.environ.copy(),
+            )
+            assert process.stdout is not None
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                self._log_line(line.decode(errors="replace").rstrip("\n"))
+
+            return_code = await process.wait()
+            if return_code != 0:
+                self._log_line(f"[exit code: {return_code}]")
+
+    def run_cli_command(self, command: str, use_pty: bool = True) -> None:
+        switcher = self.query_one("#home-switcher", ContentSwitcher)
+        tabs = self.query_one("#home-tabs-nav", Tabs)
+        try:
+            tabs.active = "CLI"
+        except Exception:
+            try:
+                tabs.active = 1
+            except Exception:
+                pass
+        switcher.current = "cli-panel"
+        if self.cli_input_widget is None or self.cli_log_widget is None:
+            self.cli_prompt_widget = self.query_one("#cli-prompt", Static)
+            self.cli_log_widget = self.query_one("#cli-log", RichLog)
+            self.cli_input_widget = self.query_one("#cli-input", Input)
+        self.query_one("#cli-input", Input).focus()
+        self._log_line(f"$ {command}")
+        asyncio.create_task(self._run_command(command, use_pty=use_pty))
 
     def _handle_cd(self, command: str) -> None:
         parts = shlex.split(command)
@@ -1236,6 +1398,205 @@ class HomeTabbedScreen(Screen):
     def _log_line(self, text: str) -> None:
         if self.cli_log_widget is not None:
             self.cli_log_widget.write(text)
+
+    def _apply_ansi_chunk(self, chunk: str) -> None:
+        # Minimal ANSI/CSI handling to keep live tables readable in RichLog.
+        i = 0
+        while i < len(chunk):
+            ch = chunk[i]
+            if ch == "\x1b" and i + 1 < len(chunk) and chunk[i + 1] == "[":
+                m = re.match(r"\x1b\[([0-9;?]*)([A-Za-z])", chunk[i:])
+                if m:
+                    params, code = m.group(1), m.group(2)
+                    i += len(m.group(0))
+                    self._handle_csi(params, code)
+                    continue
+            if ch == "\r":
+                self._cli_cursor_col = 0
+            elif ch == "\b":
+                self._cli_cursor_col = max(0, self._cli_cursor_col - 1)
+            elif ch == "\n":
+                self._cli_cursor_row += 1
+                self._cli_cursor_col = 0
+                self._ensure_line(self._cli_cursor_row)
+            else:
+                self._write_char(ch)
+            i += 1
+
+        self._render_cli_buffer()
+
+    def _handle_csi(self, params: str, code: str) -> None:
+        # Handle the common codes used by Rich/CLI live output.
+        if code == "m":
+            return  # ignore color/style
+        if code == "K":
+            # clear to end of line
+            self._clear_line(params or "0")
+            return
+        if code == "J":
+            # clear screen
+            self._clear_screen(params or "2")
+            return
+        if code == "A":
+            # cursor up
+            n = int(params or "1")
+            self._cli_cursor_row = max(0, self._cli_cursor_row - n)
+            return
+        if code == "B":
+            # cursor down
+            n = int(params or "1")
+            self._cli_cursor_row += n
+            self._ensure_line(self._cli_cursor_row)
+            return
+        if code == "E":
+            # next line, column 0
+            n = int(params or "1")
+            self._cli_cursor_row += n
+            self._cli_cursor_col = 0
+            self._ensure_line(self._cli_cursor_row)
+            return
+        if code == "F":
+            # previous line, column 0
+            n = int(params or "1")
+            self._cli_cursor_row = max(0, self._cli_cursor_row - n)
+            self._cli_cursor_col = 0
+            return
+        if code == "C":
+            # cursor forward
+            n = int(params or "1")
+            self._cli_cursor_col += n
+            return
+        if code == "D":
+            # cursor back
+            n = int(params or "1")
+            self._cli_cursor_col = max(0, self._cli_cursor_col - n)
+            return
+        if code == "G":
+            # cursor horizontal absolute (1-based)
+            try:
+                col = int(params or "1") - 1
+            except ValueError:
+                col = 0
+            self._cli_cursor_col = max(0, col)
+            return
+        if code == "H":
+            # cursor home (ignore column, set row)
+            if params:
+                parts = params.split(";")
+                try:
+                    row = int(parts[0]) - 1
+                    col = int(parts[1]) - 1 if len(parts) > 1 else 0
+                except ValueError:
+                    row = 0
+                    col = 0
+                self._cli_cursor_row = max(0, row)
+                self._cli_cursor_col = max(0, col)
+                self._ensure_line(self._cli_cursor_row)
+            else:
+                self._cli_cursor_row = 0
+                self._cli_cursor_col = 0
+            return
+        if code == "s":
+            # save cursor
+            self._cli_saved_cursor = (self._cli_cursor_row, self._cli_cursor_col)
+            return
+        if code == "u":
+            # restore cursor
+            if self._cli_saved_cursor is not None:
+                self._cli_cursor_row, self._cli_cursor_col = self._cli_saved_cursor
+                self._ensure_line(self._cli_cursor_row)
+            return
+
+    def _ensure_line(self, row: int) -> None:
+        if row < 0:
+            return
+        if row >= self._cli_rows:
+            row = self._cli_rows - 1
+        while len(self._cli_screen) < self._cli_rows:
+            self._cli_screen.append([" "] * self._cli_cols)
+
+    def _write_char(self, ch: str) -> None:
+        if self._cli_cursor_col >= self._cli_cols:
+            self._cli_cursor_row += 1
+            self._cli_cursor_col = 0
+        if self._cli_cursor_row >= self._cli_rows:
+            return
+        self._ensure_line(self._cli_cursor_row)
+        self._cli_screen[self._cli_cursor_row][self._cli_cursor_col] = ch
+        self._cli_cursor_col += 1
+
+    def _render_cli_buffer(self, force: bool = False) -> None:
+        if self.cli_log_widget is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._cli_last_render < 0.1:
+            return
+        self._cli_last_render = now
+        self.cli_log_widget.clear()
+        if not self._cli_screen:
+            return
+        for row in self._cli_screen:
+            self.cli_log_widget.write("".join(row).rstrip() or " ")
+
+    def _set_pty_winsize(self, master_fd: int, slave_fd: int) -> None:
+        cols = 120
+        rows = 40
+        try:
+            if self.cli_log_widget is not None:
+                size = self.cli_log_widget.size
+                if size.width > 0 and size.height > 0:
+                    cols = size.width
+                    rows = size.height
+        except Exception:
+            pass
+        self._cli_cols = cols
+        self._cli_rows = rows
+        try:
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+        except Exception:
+            pass
+
+    def _init_cli_screen(self) -> None:
+        self._cli_screen = [[" "] * self._cli_cols for _ in range(self._cli_rows)]
+        self._cli_cursor_row = 0
+        self._cli_cursor_col = 0
+
+    def _clear_screen(self, mode: str) -> None:
+        self._ensure_line(0)
+        if mode == "0":
+            # clear from cursor to end of screen
+            for r in range(self._cli_cursor_row, self._cli_rows):
+                start = self._cli_cursor_col if r == self._cli_cursor_row else 0
+                for c in range(start, self._cli_cols):
+                    self._cli_screen[r][c] = " "
+        elif mode == "1":
+            # clear from start to cursor
+            for r in range(0, self._cli_cursor_row + 1):
+                end = self._cli_cursor_col if r == self._cli_cursor_row else self._cli_cols
+                for c in range(0, end):
+                    self._cli_screen[r][c] = " "
+        else:
+            # mode 2 or default: clear all
+            self._cli_screen = [[" "] * self._cli_cols for _ in range(self._cli_rows)]
+            self._cli_cursor_row = 0
+            self._cli_cursor_col = 0
+
+    def _clear_line(self, mode: str) -> None:
+        if self._cli_cursor_row >= self._cli_rows:
+            return
+        self._ensure_line(self._cli_cursor_row)
+        if mode == "2":
+            for c in range(self._cli_cols):
+                self._cli_screen[self._cli_cursor_row][c] = " "
+            self._cli_cursor_col = 0
+        elif mode == "1":
+            for c in range(0, self._cli_cursor_col + 1):
+                self._cli_screen[self._cli_cursor_row][c] = " "
+        else:
+            for c in range(self._cli_cursor_col, self._cli_cols):
+                self._cli_screen[self._cli_cursor_row][c] = " "
 
     def candidates_callback(self, state: TargetState) -> list[DropdownItem]:
         base_items = self._pull_command_suggestions(self.cli_root, state.text)
@@ -1874,7 +2235,14 @@ class SequentialTasksScreenTemplate(Screen):
         .task-row { height: 1; content-align: left middle; }
         .task-spinner { width: 3; }
         .task-label { padding-left: 1; }
-        #task-log { padding: 1 2; border: round $accent; overflow-y: auto; height: 20; width: 80%;}
+        #task-log {
+            padding: 1 2;
+            border: round $accent;
+            overflow-y: auto;
+            overflow-x: auto;
+            height: 20;
+            width: 80%;
+        }
         #task-box {align: center top;}
         VerticalScroll { height: 1fr; overflow-y: auto; }
     """
@@ -1916,7 +2284,11 @@ class SequentialTasksScreenTemplate(Screen):
                 Static(""),
                 Container(
                     RichLog(
-                        id="task-log", auto_scroll=False, max_lines=100, markup=True
+                        id="task-log",
+                        auto_scroll=False,
+                        max_lines=100,
+                        markup=True,
+                        wrap=False,
                     ),
                     id="task-box",
                 ),
@@ -2038,41 +2410,49 @@ class SequentialTasksScreenTemplate(Screen):
         btn.press()
 
     async def run_tasks(self) -> None:
-        # Start background tasks first
-        self._background_tasks = []
-        for i, t in enumerate(self.tasks):
-            if t.background:
-                self.log_line(t.description, "Scheduling background task")
-                self._background_tasks.append(
-                    asyncio.create_task(self._background_wrapper(i, t))
-                )
+        try:
+            # Start background tasks first
+            self._background_tasks = []
+            for i, t in enumerate(self.tasks):
+                if t.background:
+                    self.log_line(t.description, "Scheduling background task")
+                    self._background_tasks.append(
+                        asyncio.create_task(self._background_wrapper(i, t))
+                    )
 
-        # Run foreground tasks sequentially
-        for i, t in enumerate(self.tasks):
+            # Run foreground tasks sequentially
+            for i, t in enumerate(self.tasks):
+                if self.failed:
+                    break  # already failed; stop starting new tasks
+
+                if not t.background:
+                    code = await self.run_single_task(i, t)
+                    if code not in (0, None):
+                        await self.abort_all_tasks()
+                        break
+
+            # Wait for background tasks to finish / cancel
+            if self._background_tasks:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
             if self.failed:
-                break  # already failed; stop starting new tasks
-
-            if not t.background:
-                code = await self.run_single_task(i, t)
-                if code not in (0, None):
-                    await self.abort_all_tasks()
-                    break
-
-        # Wait for background tasks to finish / cancel
-        if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
-
-        if self.failed:
-            self.log_line(None, "⚠️ Tasks aborted due to failure.")
-        else:
-            self.log_line(None, "🎉 All tasks complete.")
-            self.conclude_tasks()
-
-        # Show “Done” button either way
-        footer = self.query_one(Footer)
-        await self.mount(Button("Done", id="close-btn"), before=footer)
-        button = self.query_one("#close-btn")
-        button.focus()
+                self.log_line(None, "⚠️ Tasks aborted due to failure.")
+            else:
+                self.log_line(None, "🎉 All tasks complete.")
+                self.conclude_tasks()
+        except Exception as exc:
+            self.failed = True
+            self.log_line(None, f"❌ Task runner error: {exc!r}")
+        finally:
+            # Always show “Done” button
+            try:
+                footer = self.query_one(Footer)
+                if not self.query("#close-btn"):
+                    await self.mount(Button("Done", id="close-btn"), before=footer)
+                button = self.query_one("#close-btn", Button)
+                button.focus()
+            except Exception:
+                pass
 
 
 class BindAndStartInstance(SequentialTasksScreenTemplate):
