@@ -3,20 +3,19 @@ from __future__ import annotations
 import ast
 import asyncio
 import asyncio.subprocess
+import fcntl
 import os
+import pty
 import random
+import re
 import shlex
+import struct
+import subprocess
+import termios
+import time
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-import sys
-import pty
-import subprocess
-import re
-import time
-import fcntl
-import termios
-import struct
 from typing import Awaitable, Callable, Iterable, List, Optional
 
 from rich.console import Group, RenderableType
@@ -50,6 +49,7 @@ from textual.widgets import (
     Pretty,
     RichLog,
     Static,
+    Tab,
     Tabs,
 )
 from textual.widgets._tree import TreeNode
@@ -213,6 +213,37 @@ class WindowControls(Horizontal):
         yield BackBar()
         yield RefreshBar()
         yield ExitBar()
+
+
+class CreateMenuButton(Container):
+    DEFAULT_CSS = """
+    CreateMenuButton {
+        width: auto;
+        min-width: 6;
+        height: 3;
+    }
+    #create-menu-btn {
+        color: #eaf0fb;
+        background: #1e2531;
+        border: round #5f7087;
+        width: 5;
+        min-width: 5;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
+    #create-menu-btn:hover {
+        background: #2c3647;
+        border: round #8fa2bf;
+    }
+    #create-menu-btn:focus {
+        background: #32405a;
+        border: round #9ab2d6;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("+", id="create-menu-btn")
 
 
 class BSOD(Screen):
@@ -692,6 +723,46 @@ InstanceInfoPanel .box > ListView {
                 print(collection)
                 self.refresh(recompose=True)
 
+    @on(
+        events.Click,
+        "CurrentTablesWidget Label, CurrentTablesWidget LabelItem",
+    )
+    async def handle_double_click_table(self, event: events.Click):
+        if event.button == 1 and getattr(event, "chain", 1) >= 2:
+            if isinstance(event.widget, LabelItem):
+                label = event.widget
+            else:
+                label = event.widget.parent
+            table = label.label
+            if isinstance(table, str) and table == "Create a Table":
+                return
+            table_name = getattr(table, "name", str(table))
+            collection_name = (
+                getattr(self.selected_collection, "name", None)
+                if self.selected_collection is not None
+                else None
+            )
+            if collection_name is None:
+                self.app.notify("No collection selected.", severity="error")
+                return
+            self._open_table_actions_modal(collection_name, table_name)
+
+    @work
+    async def _open_table_actions_modal(self, collection_name: str, table_name: str):
+        result = await self.app.push_screen_wait(
+            TableActionsModal(self.app, collection_name, table_name)
+        )
+        if isinstance(result, dict) and result.get("action") == "sample":
+            self._run_table_sample_cli(collection_name, table_name)
+
+    def _run_table_sample_cli(self, collection_name: str, table_name: str) -> None:
+        command = f"td table sample --coll {collection_name} --name {table_name}"
+        home_screen = self._find_home_screen()
+        if home_screen is None:
+            self.app.notify("Home screen not available.", severity="error")
+            return
+        home_screen.run_cli_command(command, use_pty=False)
+
     @work
     async def handle_collection_modal_response(self, server, label) -> None:
         print("label is")
@@ -739,7 +810,6 @@ InstanceInfoPanel .box > ListView {
                 return screen
         return None
 
-
     def compose(self) -> ComposeResult:
         yield CurrentInstanceWidget(title="Current Instance", classes="box")
         yield CurrentCollectionsWidget(title="Current Collection", classes="box")
@@ -770,6 +840,11 @@ class CurrentStateWidgetTemplate(Static):
 
     CurrentStateWidgetTemplate > .inner {
         width: auto;
+    }
+    .section-title {
+        padding-left: 1;
+        color: #cfd7e6;
+        text-style: bold;
     }
     VerticalScroll { height: 1fr; }
     ListView ListItem.--highlight {
@@ -840,9 +915,8 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
     def generate_internals(self, collections=None):
         """Converts List to a ListView"""
         collections = list(self.parent.collection_list or [])
-        collections.append("Create a Collection")
         choiceLabels = [
-            LabelItem(getattr(i, "name", "Create a Collection"), i) for i in collections
+            LabelItem(getattr(i, "name", ""), i) for i in collections
         ]
         self.list = ListView(*choiceLabels)
         selected_name = self.parent.selected_collection_name
@@ -851,7 +925,7 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
                 if getattr(item, "name", item) == selected_name:
                     self.list.index = idx
                     break
-        return self.list
+        return Vertical(self.list, classes="inner")
 
     @on(ListView.Selected)
     def handle_collection_selected(self, event: ListView.Selected):
@@ -859,6 +933,7 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
         collection = event.item.label
         self.parent.selected_collection = collection
         self.parent.selected_collection_name = getattr(collection, "name", collection)
+
         self.parent.selected_function = None
         self.parent.selected_function_name = None
         self.parent.selected_table = None
@@ -943,6 +1018,112 @@ class LabelItem(ListItem):
     def compose(self) -> ComposeResult:
         yield self.front
 
+
+class TableActionsModal(ModalScreen):
+    CSS = """
+    TableActionsModal {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        background: rgba(0,0,0,0.25);
+    }
+
+    #table-actions-popup {
+        width: 50%;
+        height: 50%;
+        border: round $primary;
+        background: $panel;
+        padding: 1 2;
+    }
+
+    #table-actions-title {
+        margin-bottom: 1;
+    }
+
+    #table-actions-popup > ListView {
+        width: 100%;
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, app, collection: str, table: str) -> None:
+        super().__init__()
+        self._app_ref = app
+        self.collection = collection
+        self.table = table
+
+    def compose(self) -> ComposeResult:
+        with Container(id="table-actions-popup"):
+            yield ExitBar(mode="dismiss")
+            yield Static(
+                f"Table actions: {self.collection}.{self.table}",
+                id="table-actions-title",
+            )
+            yield ListView(*[LabelItem("Sample Data")])
+
+    @on(ListView.Selected)
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        if selected == "Sample Data":
+            self.dismiss(
+                {
+                    "action": "sample",
+                    "collection": self.collection,
+                    "table": self.table,
+                }
+            )
+            return
+        self.dismiss(None)
+
+
+class CreateMenuModal(ModalScreen):
+    CSS = """
+    CreateMenuModal {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        background: rgba(0,0,0,0.25);
+    }
+
+    #create-menu-popup {
+        width: 50%;
+        height: 50%;
+        border: round $primary;
+        background: $panel;
+        padding: 1 2;
+    }
+
+    #create-menu-title {
+        margin-bottom: 1;
+    }
+
+    #create-menu-popup > ListView {
+        width: 100%;
+        height: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="create-menu-popup"):
+            yield ExitBar(mode="dismiss")
+            yield Static("Create...", id="create-menu-title")
+            yield ListView(
+                *[
+                    LabelItem("Create Collection"),
+                    LabelItem("Create Function"),
+                ]
+            )
+
+    @on(ListView.Selected)
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        if selected == "Create Collection":
+            self.dismiss({"action": "create_collection"})
+            return
+        if selected == "Create Function":
+            self.dismiss({"action": "create_function"})
+            return
+        self.dismiss(None)
 
 class ListScreenTemplate(Screen):
     def __init__(self, choice_dict=None, header="Select a File: "):
@@ -1218,11 +1399,18 @@ class HomeTabbedScreen(Screen):
         self._cli_rows: int = 40
         self._cli_cols: int = 120
         self._cli_screen: list[list[str]] = []
+        self._pending_cli_command: str | None = None
+        self._pending_cli_use_pty: bool = True
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="home-topbar"):
-            yield Tabs("Main", "CLI", id="home-tabs-nav")
+            yield Tabs(
+                Tab("Main", id="main-tab"),
+                Tab("CLI", id="cli-tab"),
+                id="home-tabs-nav",
+            )
             with Horizontal(id="home-controls"):
+                yield CreateMenuButton()
                 yield BackBar()
                 yield RefreshBar()
                 yield ExitBar()
@@ -1237,7 +1425,9 @@ class HomeTabbedScreen(Screen):
             with Vertical(id="cli-panel"):
                 with Vertical(id="cli-pane"):
                     yield Static("", id="cli-prompt")
-                    yield RichLog(id="cli-log", wrap=False, highlight=True, markup=False)
+                    yield RichLog(
+                        id="cli-log", wrap=False, highlight=True, markup=False
+                    )
                     input_widget = Input(
                         placeholder="Type a command and press Enter", id="cli-input"
                     )
@@ -1254,6 +1444,26 @@ class HomeTabbedScreen(Screen):
         self._refresh_prompt()
         self._log_line("Built-ins: cd, clear, pwd, exit")
         self.query_one("#main-list", ListView).focus()
+
+    @on(Button.Pressed, "#create-menu-btn")
+    def on_create_menu_pressed(self, event: Button.Pressed) -> None:
+        self._open_create_menu()
+
+    @work
+    async def _open_create_menu(self) -> None:
+        result = await self.app.push_screen_wait(CreateMenuModal())
+        if isinstance(result, dict):
+            action = result.get("action")
+            if action == "create_collection":
+                self.app.push_screen(CollectionModal(self.app.tabsdata_server, None))
+            elif action == "create_function":
+                if Path.home() == Path.cwd():
+                    self.app.notify(
+                        "❌ Cannot scan root directory! Please run `tdconsole` in a more specific directory to avoid scanning your entire home path.",
+                        severity="error",
+                    )
+                else:
+                    self.app.push_screen(PyFileTreeScreen())
 
     @on(Tabs.TabActivated, "#home-tabs-nav")
     def on_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -1280,6 +1490,17 @@ class HomeTabbedScreen(Screen):
     @on(ScreenResume)
     def refresh_current_instance_widget(self, event: ScreenResume):
         self.query_one(InstanceInfoPanel).refresh_widget()
+        if self._pending_cli_command:
+            self.call_after_refresh(self._execute_pending_cli)
+
+    def _execute_pending_cli(self) -> None:
+        if not self._pending_cli_command:
+            return
+        cmd = self._pending_cli_command
+        use_pty = self._pending_cli_use_pty
+        self._pending_cli_command = None
+        self._pending_cli_use_pty = True
+        self.run_cli_command(cmd, use_pty=use_pty)
 
     @on(Input.Submitted, "#cli-input")
     async def on_cli_input_submitted(self, event: Input.Submitted) -> None:
@@ -1358,13 +1579,20 @@ class HomeTabbedScreen(Screen):
                 self._log_line(f"[exit code: {return_code}]")
 
     def run_cli_command(self, command: str, use_pty: bool = True) -> None:
+        if not self.is_mounted:
+            self._pending_cli_command = command
+            self._pending_cli_use_pty = use_pty
+            return
         switcher = self.query_one("#home-switcher", ContentSwitcher)
         tabs = self.query_one("#home-tabs-nav", Tabs)
         try:
-            tabs.active = "CLI"
-        except Exception:
+            switcher.current = "cli-panel"
+            tabs.active = "cli-tab"
+            self.query_one("#cli-input", Input).focus()
+        except Exception as e:
+            print(e)
             try:
-                tabs.active = 1
+                tabs.active = 2
             except Exception:
                 pass
         switcher.current = "cli-panel"
@@ -1574,7 +1802,11 @@ class HomeTabbedScreen(Screen):
         elif mode == "1":
             # clear from start to cursor
             for r in range(0, self._cli_cursor_row + 1):
-                end = self._cli_cursor_col if r == self._cli_cursor_row else self._cli_cols
+                end = (
+                    self._cli_cursor_col
+                    if r == self._cli_cursor_row
+                    else self._cli_cols
+                )
                 for c in range(0, end):
                     self._cli_screen[r][c] = " "
         else:
@@ -2759,6 +2991,8 @@ class PyFileTreeScreen(Screen):
         # Reuse ListScreenTemplate init, but choices are irrelevant for the tree
         super().__init__()
         self.root = Path(root)
+        self.initial_root = Path(root)
+        self.limit_root = Path.cwd()
         self.header = header
 
     def compose(self) -> ComposeResult:
@@ -2767,24 +3001,88 @@ class PyFileTreeScreen(Screen):
         with VerticalScroll():
             if self.header is not None:
                 yield Label(self.header, id="listHeader")
+            yield Horizontal(
+                Button("Up", id="tree-up-btn"),
+                Button("Home", id="tree-home-btn"),
+                Button("CWD", id="tree-cwd-btn"),
+                Input(placeholder="Paste path…", id="tree-path-input"),
+                Button("Go", id="tree-go-btn"),
+                id="tree-controls",
+            )
 
             # Reuse your existing "current instance" widget
             yield CurrentInstanceWidget(self.app.working_instance)
 
-            # Swap ListView for a DirectoryTree rooted at CWD, filtered to .py files
-            self.dirtree = PyOnlyDirectoryTree(
-                self.root,
-                id="py-directory-tree",
-            )
-            self.dirtree.show_guides = True
-            self.dirtree.guide_depth = 2
-            self.dirtree.show_root = True
-            yield self.dirtree
+            with Container(id="tree-container"):
+                # Swap ListView for a DirectoryTree rooted at CWD, filtered to .py files
+                self.dirtree = PyOnlyDirectoryTree(
+                    self.root,
+                    id="py-directory-tree",
+                )
+                self.dirtree.show_guides = True
+                self.dirtree.guide_depth = 2
+                self.dirtree.show_root = True
+                yield self.dirtree
 
             yield Footer()
 
     def on_show(self) -> None:
         """Focus the directory tree when the screen is shown."""
+        self.set_focus(self.dirtree)
+
+    @on(Button.Pressed, "#tree-up-btn")
+    async def on_tree_up(self, event: Button.Pressed) -> None:
+        new_root = self.root.parent if self.root.parent != self.root else self.root
+        await self._set_tree_root(new_root)
+
+    @on(Button.Pressed, "#tree-home-btn")
+    async def on_tree_home(self, event: Button.Pressed) -> None:
+        await self._set_tree_root(Path.home())
+
+    @on(Button.Pressed, "#tree-cwd-btn")
+    async def on_tree_cwd(self, event: Button.Pressed) -> None:
+        await self._set_tree_root(Path.cwd())
+
+    @on(Button.Pressed, "#tree-go-btn")
+    async def on_tree_go(self, event: Button.Pressed) -> None:
+        raw = self.query_one("#tree-path-input", Input).value.strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (self.root / path).resolve()
+        if not path.exists() or not path.is_dir():
+            self.app.notify("Path not found or not a directory.", severity="error")
+            return
+        await self._set_tree_root(path)
+
+    async def _set_tree_root(self, new_root: Path) -> None:
+        new_root = new_root.resolve()
+        limit_root = self.limit_root.resolve()
+        if new_root == Path("/"):
+            self.app.notify("Root navigation disabled.", severity="warning")
+            return
+        if new_root != limit_root and limit_root not in new_root.parents:
+            self.app.notify(
+                f"Navigation restricted to {limit_root}", severity="warning"
+            )
+            return
+        if new_root == self.root:
+            return
+        self.root = new_root
+        try:
+            await self.dirtree.remove()
+        except Exception:
+            pass
+        container = self.query_one("#tree-container", Container)
+        self.dirtree = PyOnlyDirectoryTree(
+            self.root,
+            id="py-directory-tree",
+        )
+        self.dirtree.show_guides = True
+        self.dirtree.guide_depth = 2
+        self.dirtree.show_root = True
+        await container.mount(self.dirtree)
         self.set_focus(self.dirtree)
 
     def on_directory_tree_file_selected(

@@ -21,5 +21,8 @@ res = resolve_login_credentials()
 url = res["url"]
 x = TabsdataServer(url, "admin", "tabsdata", "sys_admin")
 
-test = x.get_function("airport", "flight_pub")
-print(test)
+f = x.get_function("airport", "flight_pub")
+print(f)
+
+snippet = f.kwargs.get("snippet")
+print(snippet)
