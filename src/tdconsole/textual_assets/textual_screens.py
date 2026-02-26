@@ -915,9 +915,7 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
     def generate_internals(self, collections=None):
         """Converts List to a ListView"""
         collections = list(self.parent.collection_list or [])
-        choiceLabels = [
-            LabelItem(getattr(i, "name", ""), i) for i in collections
-        ]
+        choiceLabels = [LabelItem(getattr(i, "name", ""), i) for i in collections]
         self.list = ListView(*choiceLabels)
         selected_name = self.parent.selected_collection_name
         if selected_name:
@@ -1124,6 +1122,7 @@ class CreateMenuModal(ModalScreen):
             self.dismiss({"action": "create_function"})
             return
         self.dismiss(None)
+
 
 class ListScreenTemplate(Screen):
     def __init__(self, choice_dict=None, header="Select a File: "):
@@ -1380,6 +1379,10 @@ class HomeTabbedScreen(Screen):
         super().__init__()
         self.cwd = Path.cwd()
         self.cli_root = self._build_cli_tree()
+        self._autocomplete_cache_ttl_seconds = 30.0
+        self._autocomplete_cache: dict[
+            tuple[str, str | None], tuple[float, list[str]]
+        ] = {}
         self.main_choice_dict = {
             "Instance Management": InstanceManagementScreen,
             "Asset Management": AssetManagementScreen,
@@ -1889,10 +1892,12 @@ class HomeTabbedScreen(Screen):
             instance_node.add_child(Node(name="__instance_value__", parameter_arg=True))
 
         fn = td_node.add_child(Node("fn"))
-        fn_sample = fn.add_child("sample")
-        fn_schema = fn.add_child("schema")
-        fn_sample.add_child(["--coll", "--name"])
-        fn_schema.add_child(["--coll", "--name"])
+        fn_register = fn.add_child("register")
+        fn_trigger = fn.add_child("trigger")
+        fn_update = fn.add_child("update")
+        fn_trigger.add_child(["--coll", "--name", "--detach"])
+        fn_register.add_child(["--coll", "--path", "--update"])
+        fn_update.add_child(["--coll", "--name", "--path"])
 
         table = td_node.add_child(Node("table"))
         sample = table.add_child("sample")
@@ -2021,33 +2026,67 @@ class HomeTabbedScreen(Screen):
             return tokens[1]
         return None
 
+    def _get_cached_autocomplete(self, key: tuple[str, str | None]) -> list[str] | None:
+        cached = self._autocomplete_cache.get(key)
+        if cached is None:
+            return None
+        cached_at, values = cached
+        if (time.monotonic() - cached_at) > self._autocomplete_cache_ttl_seconds:
+            self._autocomplete_cache.pop(key, None)
+            return None
+        return list(values)
+
+    def _set_cached_autocomplete(
+        self, key: tuple[str, str | None], values: list[str]
+    ) -> list[str]:
+        sorted_values = sorted(values)
+        self._autocomplete_cache[key] = (time.monotonic(), sorted_values)
+        return list(sorted_values)
+
     def _live_collection_names(self) -> list[str]:
+        cache_key = ("collections", None)
+        cached = self._get_cached_autocomplete(cache_key)
+        if cached is not None:
+            return cached
         collections = tabsdata_api.pull_all_collections(self.app)
-        return sorted({getattr(item, "name", str(item)) for item in collections})
+        names = list({getattr(item, "name", str(item)) for item in collections})
+        return self._set_cached_autocomplete(cache_key, names)
 
     def _live_function_names(self, collection: str | None) -> list[str]:
+        cache_key = ("functions", collection)
+        cached = self._get_cached_autocomplete(cache_key)
+        if cached is not None:
+            return cached
+
         if collection:
             functions = tabsdata_api.pull_functions_from_collection(
                 self.app, collection
             )
-            return sorted({getattr(item, "name", str(item)) for item in functions})
+            names = list({getattr(item, "name", str(item)) for item in functions})
+            return self._set_cached_autocomplete(cache_key, names)
 
         names: set[str] = set()
         for coll in self._live_collection_names():
             functions = tabsdata_api.pull_functions_from_collection(self.app, coll)
             names.update(getattr(item, "name", str(item)) for item in functions)
-        return sorted(names)
+        return self._set_cached_autocomplete(cache_key, list(names))
 
     def _live_table_names(self, collection: str | None) -> list[str]:
+        cache_key = ("tables", collection)
+        cached = self._get_cached_autocomplete(cache_key)
+        if cached is not None:
+            return cached
+
         if collection:
             tables = tabsdata_api.pull_tables_from_collection(self.app, collection)
-            return sorted({getattr(item, "name", str(item)) for item in tables})
+            names = list({getattr(item, "name", str(item)) for item in tables})
+            return self._set_cached_autocomplete(cache_key, names)
 
         names: set[str] = set()
         for coll in self._live_collection_names():
             tables = tabsdata_api.pull_tables_from_collection(self.app, coll)
             names.update(getattr(item, "name", str(item)) for item in tables)
-        return sorted(names)
+        return self._set_cached_autocomplete(cache_key, list(names))
 
     def _filter_by_prefix(self, items: list[str], prefix: str) -> list[str]:
         if not prefix:
