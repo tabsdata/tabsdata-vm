@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 from sqlalchemy.orm import Session
 from tabsdata.api.tabsdata_server import TabsdataServer
 
@@ -71,7 +73,7 @@ def check_server_status(app, server: TabsdataServer = None):
         auth_status = server.auth_info()
         return True
     except:
-        False
+        return False
 
 
 def sync_instance_to_db(app):
@@ -99,10 +101,11 @@ def sync_instance_to_db(app):
     }
 
     instance = session.query(Instance).filter_by(name=instance.name).one()
-    instance.collections.clear()
-    session.commit()
-
-    if True:
+    tx = nullcontext()
+    if not session.in_transaction():
+        tx = session.begin()
+    with tx:
+        instance.collections.clear()
         for name, v in data.items():
             c = Collection(name=name, instance=instance)
             c.tables = [
@@ -114,4 +117,3 @@ def sync_instance_to_db(app):
                 for f in v["functions"]
             ]
             session.add(c)
-        session.commit()

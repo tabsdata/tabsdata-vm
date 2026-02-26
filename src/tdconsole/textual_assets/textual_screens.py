@@ -3,9 +3,16 @@ from __future__ import annotations
 import ast
 import asyncio
 import asyncio.subprocess
+import fcntl
 import os
+import pty
 import random
+import re
 import shlex
+import struct
+import subprocess
+import termios
+import time
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -18,7 +25,13 @@ from sqlalchemy.orm import Session
 from tabsdata.api.tabsdata_server import Collection, Function, TabsdataServer
 from textual import events, on, work
 from textual.app import ComposeResult
-from textual.containers import Center, Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import (
+    Center,
+    Container,
+    Horizontal,
+    Vertical,
+    VerticalScroll,
+)
 from textual.events import Key, ScreenResume
 from textual.geometry import Offset, Region, Spacing
 from textual.reactive import reactive
@@ -36,6 +49,7 @@ from textual.widgets import (
     Pretty,
     RichLog,
     Static,
+    Tab,
     Tabs,
 )
 from textual.widgets._tree import TreeNode
@@ -138,6 +152,51 @@ class RefreshBar(Container):
             pass
 
 
+class BackBar(Container):
+    DEFAULT_CSS = """
+    BackBar {
+        width: auto;
+        min-width: 6;
+        height: 3;
+    }
+    #back-btn {
+        color: #eaf0fb;
+        background: #1e2531;
+        border: round #5f7087;
+        width: 5;
+        min-width: 5;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
+    #back-btn:hover {
+        background: #2c3647;
+        border: round #8fa2bf;
+    }
+    #back-btn:focus {
+        background: #32405a;
+        border: round #9ab2d6;
+    }
+    .back-spacer {
+        width: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("←", id="back-btn")
+
+    @on(Button.Pressed, "#back-btn")
+    def on_back_pressed(self, event: Button.Pressed) -> None:
+        # Match app back behavior (if possible), otherwise pop one screen.
+        try:
+            self.app.action_go_back()
+        except Exception:
+            try:
+                self.app.pop_screen()
+            except Exception:
+                pass
+
+
 class WindowControls(Horizontal):
     DEFAULT_CSS = """
     WindowControls {
@@ -151,8 +210,40 @@ class WindowControls(Horizontal):
 
     def compose(self) -> ComposeResult:
         yield Static("", classes="window-controls-spacer")
+        yield BackBar()
         yield RefreshBar()
         yield ExitBar()
+
+
+class CreateMenuButton(Container):
+    DEFAULT_CSS = """
+    CreateMenuButton {
+        width: auto;
+        min-width: 6;
+        height: 3;
+    }
+    #create-menu-btn {
+        color: #eaf0fb;
+        background: #1e2531;
+        border: round #5f7087;
+        width: 5;
+        min-width: 5;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
+    #create-menu-btn:hover {
+        background: #2c3647;
+        border: round #8fa2bf;
+    }
+    #create-menu-btn:focus {
+        background: #32405a;
+        border: round #9ab2d6;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("+", id="create-menu-btn")
 
 
 class BSOD(Screen):
@@ -407,8 +498,8 @@ class FunctionModal(ModalScreen):
     def compose(self) -> ComposeResult:
         with Container(id="popup"):
             yield ExitBar(mode="dismiss")
-            if isinstance(self.collection, Function):
-                options = ["Delete Function", "Trigger Function"]
+            if isinstance(self.function, Function):
+                options = ["Trigger Function"]
                 yield Static(
                     f"What would you like to do with the {self.function.name} function?",
                     id="title",
@@ -495,10 +586,18 @@ class FunctionModal(ModalScreen):
     @on(ListView.Selected)
     def _picked(self, event: ListView.Selected) -> None:
         selected = event.item.label
-        if selected == "Delete Collection":
-            server: TabsdataServer = self.server
-            delete_collection = server.delete_collection(self.collection.name)
-        self.dismiss(delete_collection)
+        if selected == "Trigger Function":
+            function_name = getattr(self.function, "name", str(self.function))
+            collection_name = getattr(self.collection, "name", None)
+            self.dismiss(
+                {
+                    "action": "trigger",
+                    "collection": collection_name,
+                    "function": function_name,
+                }
+            )
+            return
+        self.dismiss(None)
 
     @on(Input.Submitted)
     def _inputed(self, event: Input.Submitted) -> None:
@@ -624,6 +723,46 @@ InstanceInfoPanel .box > ListView {
                 print(collection)
                 self.refresh(recompose=True)
 
+    @on(
+        events.Click,
+        "CurrentTablesWidget Label, CurrentTablesWidget LabelItem",
+    )
+    async def handle_double_click_table(self, event: events.Click):
+        if event.button == 1 and getattr(event, "chain", 1) >= 2:
+            if isinstance(event.widget, LabelItem):
+                label = event.widget
+            else:
+                label = event.widget.parent
+            table = label.label
+            if isinstance(table, str) and table == "Create a Table":
+                return
+            table_name = getattr(table, "name", str(table))
+            collection_name = (
+                getattr(self.selected_collection, "name", None)
+                if self.selected_collection is not None
+                else None
+            )
+            if collection_name is None:
+                self.app.notify("No collection selected.", severity="error")
+                return
+            self._open_table_actions_modal(collection_name, table_name)
+
+    @work
+    async def _open_table_actions_modal(self, collection_name: str, table_name: str):
+        result = await self.app.push_screen_wait(
+            TableActionsModal(self.app, collection_name, table_name)
+        )
+        if isinstance(result, dict) and result.get("action") == "sample":
+            self._run_table_sample_cli(collection_name, table_name)
+
+    def _run_table_sample_cli(self, collection_name: str, table_name: str) -> None:
+        command = f"td table sample --coll {collection_name} --name {table_name}"
+        home_screen = self._find_home_screen()
+        if home_screen is None:
+            self.app.notify("Home screen not available.", severity="error")
+            return
+        home_screen.run_cli_command(command, use_pty=False)
+
     @work
     async def handle_collection_modal_response(self, server, label) -> None:
         print("label is")
@@ -648,7 +787,28 @@ InstanceInfoPanel .box > ListView {
             )
         )
 
+        if isinstance(result, dict) and result.get("action") == "trigger":
+            self._trigger_function_cli(result)
         return result
+
+    def _trigger_function_cli(self, payload: dict) -> None:
+        collection = payload.get("collection")
+        function = payload.get("function")
+        if not collection or not function:
+            self.app.notify("Missing collection or function name.", severity="error")
+            return
+        command = f"td fn trigger --coll {collection} --name {function}"
+        home_screen = self._find_home_screen()
+        if home_screen is None:
+            self.app.notify("Home screen not available.", severity="error")
+            return
+        home_screen.run_cli_command(command, use_pty=False)
+
+    def _find_home_screen(self):
+        for screen in reversed(self.app.screen_stack):
+            if screen.__class__.__name__ == "HomeTabbedScreen":
+                return screen
+        return None
 
     def compose(self) -> ComposeResult:
         yield CurrentInstanceWidget(title="Current Instance", classes="box")
@@ -680,6 +840,11 @@ class CurrentStateWidgetTemplate(Static):
 
     CurrentStateWidgetTemplate > .inner {
         width: auto;
+    }
+    .section-title {
+        padding-left: 1;
+        color: #cfd7e6;
+        text-style: bold;
     }
     VerticalScroll { height: 1fr; }
     ListView ListItem.--highlight {
@@ -750,9 +915,8 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
     def generate_internals(self, collections=None):
         """Converts List to a ListView"""
         collections = list(self.parent.collection_list or [])
-        collections.append("Create a Collection")
         choiceLabels = [
-            LabelItem(getattr(i, "name", "Create a Collection"), i) for i in collections
+            LabelItem(getattr(i, "name", ""), i) for i in collections
         ]
         self.list = ListView(*choiceLabels)
         selected_name = self.parent.selected_collection_name
@@ -761,7 +925,7 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
                 if getattr(item, "name", item) == selected_name:
                     self.list.index = idx
                     break
-        return self.list
+        return Vertical(self.list, classes="inner")
 
     @on(ListView.Selected)
     def handle_collection_selected(self, event: ListView.Selected):
@@ -769,6 +933,7 @@ class CurrentCollectionsWidget(CurrentStateWidgetTemplate):
         collection = event.item.label
         self.parent.selected_collection = collection
         self.parent.selected_collection_name = getattr(collection, "name", collection)
+
         self.parent.selected_function = None
         self.parent.selected_function_name = None
         self.parent.selected_table = None
@@ -853,6 +1018,112 @@ class LabelItem(ListItem):
     def compose(self) -> ComposeResult:
         yield self.front
 
+
+class TableActionsModal(ModalScreen):
+    CSS = """
+    TableActionsModal {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        background: rgba(0,0,0,0.25);
+    }
+
+    #table-actions-popup {
+        width: 50%;
+        height: 50%;
+        border: round $primary;
+        background: $panel;
+        padding: 1 2;
+    }
+
+    #table-actions-title {
+        margin-bottom: 1;
+    }
+
+    #table-actions-popup > ListView {
+        width: 100%;
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, app, collection: str, table: str) -> None:
+        super().__init__()
+        self._app_ref = app
+        self.collection = collection
+        self.table = table
+
+    def compose(self) -> ComposeResult:
+        with Container(id="table-actions-popup"):
+            yield ExitBar(mode="dismiss")
+            yield Static(
+                f"Table actions: {self.collection}.{self.table}",
+                id="table-actions-title",
+            )
+            yield ListView(*[LabelItem("Sample Data")])
+
+    @on(ListView.Selected)
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        if selected == "Sample Data":
+            self.dismiss(
+                {
+                    "action": "sample",
+                    "collection": self.collection,
+                    "table": self.table,
+                }
+            )
+            return
+        self.dismiss(None)
+
+
+class CreateMenuModal(ModalScreen):
+    CSS = """
+    CreateMenuModal {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        background: rgba(0,0,0,0.25);
+    }
+
+    #create-menu-popup {
+        width: 50%;
+        height: 50%;
+        border: round $primary;
+        background: $panel;
+        padding: 1 2;
+    }
+
+    #create-menu-title {
+        margin-bottom: 1;
+    }
+
+    #create-menu-popup > ListView {
+        width: 100%;
+        height: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="create-menu-popup"):
+            yield ExitBar(mode="dismiss")
+            yield Static("Create...", id="create-menu-title")
+            yield ListView(
+                *[
+                    LabelItem("Create Collection"),
+                    LabelItem("Create Function"),
+                ]
+            )
+
+    @on(ListView.Selected)
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        selected = event.item.label
+        if selected == "Create Collection":
+            self.dismiss({"action": "create_collection"})
+            return
+        if selected == "Create Function":
+            self.dismiss({"action": "create_function"})
+            return
+        self.dismiss(None)
 
 class ListScreenTemplate(Screen):
     def __init__(self, choice_dict=None, header="Select a File: "):
@@ -1092,6 +1363,17 @@ class HomeTabbedScreen(Screen):
         height: 1fr;
         border: round $accent;
     }
+    #cli-input {
+        height: 3;
+    }
+    #main-scroll {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    #main-list {
+        height: auto;
+        overflow-y: hidden;
+    }
     """
 
     def __init__(self) -> None:
@@ -1109,24 +1391,43 @@ class HomeTabbedScreen(Screen):
         self.cli_prompt_widget: Static | None = None
         self.cli_log_widget: RichLog | None = None
         self.cli_input_widget: Input | None = None
+        self._cli_screen_lines: list[str] = [""]
+        self._cli_cursor_row: int = 0
+        self._cli_cursor_col: int = 0
+        self._cli_saved_cursor: tuple[int, int] | None = None
+        self._cli_last_render: float = 0.0
+        self._cli_rows: int = 40
+        self._cli_cols: int = 120
+        self._cli_screen: list[list[str]] = []
+        self._pending_cli_command: str | None = None
+        self._pending_cli_use_pty: bool = True
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="home-topbar"):
-            yield Tabs("Main", "CLI", id="home-tabs-nav")
+            yield Tabs(
+                Tab("Main", id="main-tab"),
+                Tab("CLI", id="cli-tab"),
+                id="home-tabs-nav",
+            )
             with Horizontal(id="home-controls"):
+                yield CreateMenuButton()
+                yield BackBar()
                 yield RefreshBar()
                 yield ExitBar()
 
         with ContentSwitcher(initial="main-panel", id="home-switcher"):
             with Vertical(id="main-panel"):
-                yield InstanceInfoPanel()
-                yield ListView(
-                    *[LabelItem(choice) for choice in self.choices], id="main-list"
-                )
+                with VerticalScroll(id="main-scroll"):
+                    yield InstanceInfoPanel()
+                    yield ListView(
+                        *[LabelItem(choice) for choice in self.choices], id="main-list"
+                    )
             with Vertical(id="cli-panel"):
                 with Vertical(id="cli-pane"):
                     yield Static("", id="cli-prompt")
-                    yield RichLog(id="cli-log", wrap=True, highlight=True, markup=False)
+                    yield RichLog(
+                        id="cli-log", wrap=False, highlight=True, markup=False
+                    )
                     input_widget = Input(
                         placeholder="Type a command and press Enter", id="cli-input"
                     )
@@ -1143,6 +1444,26 @@ class HomeTabbedScreen(Screen):
         self._refresh_prompt()
         self._log_line("Built-ins: cd, clear, pwd, exit")
         self.query_one("#main-list", ListView).focus()
+
+    @on(Button.Pressed, "#create-menu-btn")
+    def on_create_menu_pressed(self, event: Button.Pressed) -> None:
+        self._open_create_menu()
+
+    @work
+    async def _open_create_menu(self) -> None:
+        result = await self.app.push_screen_wait(CreateMenuModal())
+        if isinstance(result, dict):
+            action = result.get("action")
+            if action == "create_collection":
+                self.app.push_screen(CollectionModal(self.app.tabsdata_server, None))
+            elif action == "create_function":
+                if Path.home() == Path.cwd():
+                    self.app.notify(
+                        "❌ Cannot scan root directory! Please run `tdconsole` in a more specific directory to avoid scanning your entire home path.",
+                        severity="error",
+                    )
+                else:
+                    self.app.push_screen(PyFileTreeScreen())
 
     @on(Tabs.TabActivated, "#home-tabs-nav")
     def on_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -1169,6 +1490,17 @@ class HomeTabbedScreen(Screen):
     @on(ScreenResume)
     def refresh_current_instance_widget(self, event: ScreenResume):
         self.query_one(InstanceInfoPanel).refresh_widget()
+        if self._pending_cli_command:
+            self.call_after_refresh(self._execute_pending_cli)
+
+    def _execute_pending_cli(self) -> None:
+        if not self._pending_cli_command:
+            return
+        cmd = self._pending_cli_command
+        use_pty = self._pending_cli_use_pty
+        self._pending_cli_command = None
+        self._pending_cli_use_pty = True
+        self.run_cli_command(cmd, use_pty=use_pty)
 
     @on(Input.Submitted, "#cli-input")
     async def on_cli_input_submitted(self, event: Input.Submitted) -> None:
@@ -1181,7 +1513,7 @@ class HomeTabbedScreen(Screen):
         await self._run_command(command)
         self._refresh_prompt()
 
-    async def _run_command(self, command: str) -> None:
+    async def _run_command(self, command: str, use_pty: bool = False) -> None:
         if command == "clear":
             if self.cli_log_widget is not None:
                 self.cli_log_widget.clear()
@@ -1196,23 +1528,81 @@ class HomeTabbedScreen(Screen):
             self._handle_cd(command)
             return
 
-        process = await asyncio.create_subprocess_shell(
-            command,
-            cwd=str(self.cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=os.environ.copy(),
-        )
-        assert process.stdout is not None
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            self._log_line(line.decode(errors="replace").rstrip("\n"))
+        if use_pty:
+            master_fd, slave_fd = pty.openpty()
+            self._set_pty_winsize(master_fd, slave_fd)
+            self._init_cli_screen()
+            env = os.environ.copy()
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                cwd=str(self.cwd),
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                close_fds=True,
+            )
+            os.close(slave_fd)
 
-        return_code = await process.wait()
-        if return_code != 0:
-            self._log_line(f"[exit code: {return_code}]")
+            try:
+                while True:
+                    data = await asyncio.to_thread(os.read, master_fd, 4096)
+                    if not data:
+                        break
+                    chunk = data.decode(errors="replace")
+                    self._apply_ansi_chunk(chunk)
+            finally:
+                os.close(master_fd)
+
+            return_code = await asyncio.to_thread(process.wait)
+            self._render_cli_buffer(force=True)
+            if return_code != 0:
+                self._log_line(f"[exit code: {return_code}]")
+        else:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(self.cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=os.environ.copy(),
+            )
+            assert process.stdout is not None
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                self._log_line(line.decode(errors="replace").rstrip("\n"))
+
+            return_code = await process.wait()
+            if return_code != 0:
+                self._log_line(f"[exit code: {return_code}]")
+
+    def run_cli_command(self, command: str, use_pty: bool = True) -> None:
+        if not self.is_mounted:
+            self._pending_cli_command = command
+            self._pending_cli_use_pty = use_pty
+            return
+        switcher = self.query_one("#home-switcher", ContentSwitcher)
+        tabs = self.query_one("#home-tabs-nav", Tabs)
+        try:
+            switcher.current = "cli-panel"
+            tabs.active = "cli-tab"
+            self.query_one("#cli-input", Input).focus()
+        except Exception as e:
+            print(e)
+            try:
+                tabs.active = 2
+            except Exception:
+                pass
+        switcher.current = "cli-panel"
+        if self.cli_input_widget is None or self.cli_log_widget is None:
+            self.cli_prompt_widget = self.query_one("#cli-prompt", Static)
+            self.cli_log_widget = self.query_one("#cli-log", RichLog)
+            self.cli_input_widget = self.query_one("#cli-input", Input)
+        self.query_one("#cli-input", Input).focus()
+        self._log_line(f"$ {command}")
+        asyncio.create_task(self._run_command(command, use_pty=use_pty))
 
     def _handle_cd(self, command: str) -> None:
         parts = shlex.split(command)
@@ -1236,6 +1626,209 @@ class HomeTabbedScreen(Screen):
     def _log_line(self, text: str) -> None:
         if self.cli_log_widget is not None:
             self.cli_log_widget.write(text)
+
+    def _apply_ansi_chunk(self, chunk: str) -> None:
+        # Minimal ANSI/CSI handling to keep live tables readable in RichLog.
+        i = 0
+        while i < len(chunk):
+            ch = chunk[i]
+            if ch == "\x1b" and i + 1 < len(chunk) and chunk[i + 1] == "[":
+                m = re.match(r"\x1b\[([0-9;?]*)([A-Za-z])", chunk[i:])
+                if m:
+                    params, code = m.group(1), m.group(2)
+                    i += len(m.group(0))
+                    self._handle_csi(params, code)
+                    continue
+            if ch == "\r":
+                self._cli_cursor_col = 0
+            elif ch == "\b":
+                self._cli_cursor_col = max(0, self._cli_cursor_col - 1)
+            elif ch == "\n":
+                self._cli_cursor_row += 1
+                self._cli_cursor_col = 0
+                self._ensure_line(self._cli_cursor_row)
+            else:
+                self._write_char(ch)
+            i += 1
+
+        self._render_cli_buffer()
+
+    def _handle_csi(self, params: str, code: str) -> None:
+        # Handle the common codes used by Rich/CLI live output.
+        if code == "m":
+            return  # ignore color/style
+        if code == "K":
+            # clear to end of line
+            self._clear_line(params or "0")
+            return
+        if code == "J":
+            # clear screen
+            self._clear_screen(params or "2")
+            return
+        if code == "A":
+            # cursor up
+            n = int(params or "1")
+            self._cli_cursor_row = max(0, self._cli_cursor_row - n)
+            return
+        if code == "B":
+            # cursor down
+            n = int(params or "1")
+            self._cli_cursor_row += n
+            self._ensure_line(self._cli_cursor_row)
+            return
+        if code == "E":
+            # next line, column 0
+            n = int(params or "1")
+            self._cli_cursor_row += n
+            self._cli_cursor_col = 0
+            self._ensure_line(self._cli_cursor_row)
+            return
+        if code == "F":
+            # previous line, column 0
+            n = int(params or "1")
+            self._cli_cursor_row = max(0, self._cli_cursor_row - n)
+            self._cli_cursor_col = 0
+            return
+        if code == "C":
+            # cursor forward
+            n = int(params or "1")
+            self._cli_cursor_col += n
+            return
+        if code == "D":
+            # cursor back
+            n = int(params or "1")
+            self._cli_cursor_col = max(0, self._cli_cursor_col - n)
+            return
+        if code == "G":
+            # cursor horizontal absolute (1-based)
+            try:
+                col = int(params or "1") - 1
+            except ValueError:
+                col = 0
+            self._cli_cursor_col = max(0, col)
+            return
+        if code == "H":
+            # cursor home (ignore column, set row)
+            if params:
+                parts = params.split(";")
+                try:
+                    row = int(parts[0]) - 1
+                    col = int(parts[1]) - 1 if len(parts) > 1 else 0
+                except ValueError:
+                    row = 0
+                    col = 0
+                self._cli_cursor_row = max(0, row)
+                self._cli_cursor_col = max(0, col)
+                self._ensure_line(self._cli_cursor_row)
+            else:
+                self._cli_cursor_row = 0
+                self._cli_cursor_col = 0
+            return
+        if code == "s":
+            # save cursor
+            self._cli_saved_cursor = (self._cli_cursor_row, self._cli_cursor_col)
+            return
+        if code == "u":
+            # restore cursor
+            if self._cli_saved_cursor is not None:
+                self._cli_cursor_row, self._cli_cursor_col = self._cli_saved_cursor
+                self._ensure_line(self._cli_cursor_row)
+            return
+
+    def _ensure_line(self, row: int) -> None:
+        if row < 0:
+            return
+        if row >= self._cli_rows:
+            row = self._cli_rows - 1
+        while len(self._cli_screen) < self._cli_rows:
+            self._cli_screen.append([" "] * self._cli_cols)
+
+    def _write_char(self, ch: str) -> None:
+        if self._cli_cursor_col >= self._cli_cols:
+            self._cli_cursor_row += 1
+            self._cli_cursor_col = 0
+        if self._cli_cursor_row >= self._cli_rows:
+            return
+        self._ensure_line(self._cli_cursor_row)
+        self._cli_screen[self._cli_cursor_row][self._cli_cursor_col] = ch
+        self._cli_cursor_col += 1
+
+    def _render_cli_buffer(self, force: bool = False) -> None:
+        if self.cli_log_widget is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._cli_last_render < 0.1:
+            return
+        self._cli_last_render = now
+        self.cli_log_widget.clear()
+        if not self._cli_screen:
+            return
+        for row in self._cli_screen:
+            self.cli_log_widget.write("".join(row).rstrip() or " ")
+
+    def _set_pty_winsize(self, master_fd: int, slave_fd: int) -> None:
+        cols = 120
+        rows = 40
+        try:
+            if self.cli_log_widget is not None:
+                size = self.cli_log_widget.size
+                if size.width > 0 and size.height > 0:
+                    cols = size.width
+                    rows = size.height
+        except Exception:
+            pass
+        self._cli_cols = cols
+        self._cli_rows = rows
+        try:
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+        except Exception:
+            pass
+
+    def _init_cli_screen(self) -> None:
+        self._cli_screen = [[" "] * self._cli_cols for _ in range(self._cli_rows)]
+        self._cli_cursor_row = 0
+        self._cli_cursor_col = 0
+
+    def _clear_screen(self, mode: str) -> None:
+        self._ensure_line(0)
+        if mode == "0":
+            # clear from cursor to end of screen
+            for r in range(self._cli_cursor_row, self._cli_rows):
+                start = self._cli_cursor_col if r == self._cli_cursor_row else 0
+                for c in range(start, self._cli_cols):
+                    self._cli_screen[r][c] = " "
+        elif mode == "1":
+            # clear from start to cursor
+            for r in range(0, self._cli_cursor_row + 1):
+                end = (
+                    self._cli_cursor_col
+                    if r == self._cli_cursor_row
+                    else self._cli_cols
+                )
+                for c in range(0, end):
+                    self._cli_screen[r][c] = " "
+        else:
+            # mode 2 or default: clear all
+            self._cli_screen = [[" "] * self._cli_cols for _ in range(self._cli_rows)]
+            self._cli_cursor_row = 0
+            self._cli_cursor_col = 0
+
+    def _clear_line(self, mode: str) -> None:
+        if self._cli_cursor_row >= self._cli_rows:
+            return
+        self._ensure_line(self._cli_cursor_row)
+        if mode == "2":
+            for c in range(self._cli_cols):
+                self._cli_screen[self._cli_cursor_row][c] = " "
+            self._cli_cursor_col = 0
+        elif mode == "1":
+            for c in range(0, self._cli_cursor_col + 1):
+                self._cli_screen[self._cli_cursor_row][c] = " "
+        else:
+            for c in range(self._cli_cursor_col, self._cli_cols):
+                self._cli_screen[self._cli_cursor_row][c] = " "
 
     def candidates_callback(self, state: TargetState) -> list[DropdownItem]:
         base_items = self._pull_command_suggestions(self.cli_root, state.text)
@@ -1874,7 +2467,14 @@ class SequentialTasksScreenTemplate(Screen):
         .task-row { height: 1; content-align: left middle; }
         .task-spinner { width: 3; }
         .task-label { padding-left: 1; }
-        #task-log { padding: 1 2; border: round $accent; overflow-y: auto; height: 20; width: 80%;}
+        #task-log {
+            padding: 1 2;
+            border: round $accent;
+            overflow-y: auto;
+            overflow-x: auto;
+            height: 20;
+            width: 80%;
+        }
         #task-box {align: center top;}
         VerticalScroll { height: 1fr; overflow-y: auto; }
     """
@@ -1916,7 +2516,11 @@ class SequentialTasksScreenTemplate(Screen):
                 Static(""),
                 Container(
                     RichLog(
-                        id="task-log", auto_scroll=False, max_lines=100, markup=True
+                        id="task-log",
+                        auto_scroll=False,
+                        max_lines=100,
+                        markup=True,
+                        wrap=False,
                     ),
                     id="task-box",
                 ),
@@ -2038,41 +2642,49 @@ class SequentialTasksScreenTemplate(Screen):
         btn.press()
 
     async def run_tasks(self) -> None:
-        # Start background tasks first
-        self._background_tasks = []
-        for i, t in enumerate(self.tasks):
-            if t.background:
-                self.log_line(t.description, "Scheduling background task")
-                self._background_tasks.append(
-                    asyncio.create_task(self._background_wrapper(i, t))
-                )
+        try:
+            # Start background tasks first
+            self._background_tasks = []
+            for i, t in enumerate(self.tasks):
+                if t.background:
+                    self.log_line(t.description, "Scheduling background task")
+                    self._background_tasks.append(
+                        asyncio.create_task(self._background_wrapper(i, t))
+                    )
 
-        # Run foreground tasks sequentially
-        for i, t in enumerate(self.tasks):
+            # Run foreground tasks sequentially
+            for i, t in enumerate(self.tasks):
+                if self.failed:
+                    break  # already failed; stop starting new tasks
+
+                if not t.background:
+                    code = await self.run_single_task(i, t)
+                    if code not in (0, None):
+                        await self.abort_all_tasks()
+                        break
+
+            # Wait for background tasks to finish / cancel
+            if self._background_tasks:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
             if self.failed:
-                break  # already failed; stop starting new tasks
-
-            if not t.background:
-                code = await self.run_single_task(i, t)
-                if code not in (0, None):
-                    await self.abort_all_tasks()
-                    break
-
-        # Wait for background tasks to finish / cancel
-        if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
-
-        if self.failed:
-            self.log_line(None, "⚠️ Tasks aborted due to failure.")
-        else:
-            self.log_line(None, "🎉 All tasks complete.")
-            self.conclude_tasks()
-
-        # Show “Done” button either way
-        footer = self.query_one(Footer)
-        await self.mount(Button("Done", id="close-btn"), before=footer)
-        button = self.query_one("#close-btn")
-        button.focus()
+                self.log_line(None, "⚠️ Tasks aborted due to failure.")
+            else:
+                self.log_line(None, "🎉 All tasks complete.")
+                self.conclude_tasks()
+        except Exception as exc:
+            self.failed = True
+            self.log_line(None, f"❌ Task runner error: {exc!r}")
+        finally:
+            # Always show “Done” button
+            try:
+                footer = self.query_one(Footer)
+                if not self.query("#close-btn"):
+                    await self.mount(Button("Done", id="close-btn"), before=footer)
+                button = self.query_one("#close-btn", Button)
+                button.focus()
+            except Exception:
+                pass
 
 
 class BindAndStartInstance(SequentialTasksScreenTemplate):
@@ -2379,6 +2991,8 @@ class PyFileTreeScreen(Screen):
         # Reuse ListScreenTemplate init, but choices are irrelevant for the tree
         super().__init__()
         self.root = Path(root)
+        self.initial_root = Path(root)
+        self.limit_root = Path.cwd()
         self.header = header
 
     def compose(self) -> ComposeResult:
@@ -2387,24 +3001,88 @@ class PyFileTreeScreen(Screen):
         with VerticalScroll():
             if self.header is not None:
                 yield Label(self.header, id="listHeader")
+            yield Horizontal(
+                Button("Up", id="tree-up-btn"),
+                Button("Home", id="tree-home-btn"),
+                Button("CWD", id="tree-cwd-btn"),
+                Input(placeholder="Paste path…", id="tree-path-input"),
+                Button("Go", id="tree-go-btn"),
+                id="tree-controls",
+            )
 
             # Reuse your existing "current instance" widget
             yield CurrentInstanceWidget(self.app.working_instance)
 
-            # Swap ListView for a DirectoryTree rooted at CWD, filtered to .py files
-            self.dirtree = PyOnlyDirectoryTree(
-                self.root,
-                id="py-directory-tree",
-            )
-            self.dirtree.show_guides = True
-            self.dirtree.guide_depth = 2
-            self.dirtree.show_root = True
-            yield self.dirtree
+            with Container(id="tree-container"):
+                # Swap ListView for a DirectoryTree rooted at CWD, filtered to .py files
+                self.dirtree = PyOnlyDirectoryTree(
+                    self.root,
+                    id="py-directory-tree",
+                )
+                self.dirtree.show_guides = True
+                self.dirtree.guide_depth = 2
+                self.dirtree.show_root = True
+                yield self.dirtree
 
             yield Footer()
 
     def on_show(self) -> None:
         """Focus the directory tree when the screen is shown."""
+        self.set_focus(self.dirtree)
+
+    @on(Button.Pressed, "#tree-up-btn")
+    async def on_tree_up(self, event: Button.Pressed) -> None:
+        new_root = self.root.parent if self.root.parent != self.root else self.root
+        await self._set_tree_root(new_root)
+
+    @on(Button.Pressed, "#tree-home-btn")
+    async def on_tree_home(self, event: Button.Pressed) -> None:
+        await self._set_tree_root(Path.home())
+
+    @on(Button.Pressed, "#tree-cwd-btn")
+    async def on_tree_cwd(self, event: Button.Pressed) -> None:
+        await self._set_tree_root(Path.cwd())
+
+    @on(Button.Pressed, "#tree-go-btn")
+    async def on_tree_go(self, event: Button.Pressed) -> None:
+        raw = self.query_one("#tree-path-input", Input).value.strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (self.root / path).resolve()
+        if not path.exists() or not path.is_dir():
+            self.app.notify("Path not found or not a directory.", severity="error")
+            return
+        await self._set_tree_root(path)
+
+    async def _set_tree_root(self, new_root: Path) -> None:
+        new_root = new_root.resolve()
+        limit_root = self.limit_root.resolve()
+        if new_root == Path("/"):
+            self.app.notify("Root navigation disabled.", severity="warning")
+            return
+        if new_root != limit_root and limit_root not in new_root.parents:
+            self.app.notify(
+                f"Navigation restricted to {limit_root}", severity="warning"
+            )
+            return
+        if new_root == self.root:
+            return
+        self.root = new_root
+        try:
+            await self.dirtree.remove()
+        except Exception:
+            pass
+        container = self.query_one("#tree-container", Container)
+        self.dirtree = PyOnlyDirectoryTree(
+            self.root,
+            id="py-directory-tree",
+        )
+        self.dirtree.show_guides = True
+        self.dirtree.guide_depth = 2
+        self.dirtree.show_root = True
+        await container.mount(self.dirtree)
         self.set_focus(self.dirtree)
 
     def on_directory_tree_file_selected(
