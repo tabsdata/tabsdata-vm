@@ -52,6 +52,7 @@ from textual.widgets import (
     RadioButton,
     RadioSet,
     RichLog,
+    Select,
     Static,
     Tab,
     Tabs,
@@ -68,6 +69,10 @@ from tdconsole.core.find_instances import (
     make_remote_instance_name,
 )
 from tdconsole.core.models import Instance
+from tdconsole.core.system_environment import (
+    detect_os_name,
+    detect_vm_type,
+)
 from tdconsole.textual_assets.spinners import SpinnerWidget
 
 
@@ -203,6 +208,83 @@ class BackBar(Container):
                 pass
 
 
+class SystemEnvironmentDropdown(Container):
+    DEFAULT_CSS = """
+    SystemEnvironmentDropdown {
+        width: auto;
+        min-width: 38;
+        height: auto;
+        margin: 0 1 0 0;
+        layout: horizontal;
+        align: right middle;
+    }
+    #system-type-select {
+        width: 15;
+        min-width: 13;
+        height: auto;
+        margin: 0 1 0 0;
+    }
+    #vm-type-select {
+        width: 20;
+        min-width: 16;
+        height: auto;
+    }
+    """
+
+    SYSTEM_OPTIONS: tuple[str, ...] = ("macOS", "Linux", "Windows", "Unknown")
+    VM_TYPE_OPTIONS: tuple[str, ...] = ("EC2", "Not Available")
+
+    def _resolved_system_value(self) -> str:
+        cached = getattr(self.app, "_system_type_selected", None)
+        if cached in self.SYSTEM_OPTIONS:
+            return cached
+        detected = detect_os_name()
+        if detected not in self.SYSTEM_OPTIONS:
+            detected = "Unknown"
+        self.app._system_type_selected = detected
+        return detected
+
+    def _resolved_vm_type_value(self) -> str:
+        cached = getattr(self.app, "_vm_type_selected", None)
+        if cached in self.VM_TYPE_OPTIONS:
+            return cached
+        detected = detect_vm_type()
+        if detected not in self.VM_TYPE_OPTIONS:
+            detected = "Not Available"
+        self.app._vm_type_selected = detected
+        return detected
+
+    def compose(self) -> ComposeResult:
+        system_default = self._resolved_system_value()
+        vm_default = self._resolved_vm_type_value()
+        system_options = [(name, name) for name in self.SYSTEM_OPTIONS]
+        vm_options = [(name, name) for name in self.VM_TYPE_OPTIONS]
+        yield Select(
+            options=system_options,
+            value=system_default,
+            allow_blank=False,
+            id="system-type-select",
+        )
+        yield Select(
+            options=vm_options,
+            value=vm_default,
+            allow_blank=False,
+            id="vm-type-select",
+        )
+
+    @on(Select.Changed, "#system-type-select")
+    def on_system_type_changed(self, event: Select.Changed) -> None:
+        value = str(event.value)
+        if value in self.SYSTEM_OPTIONS:
+            self.app._system_type_selected = value
+
+    @on(Select.Changed, "#vm-type-select")
+    def on_vm_type_changed(self, event: Select.Changed) -> None:
+        value = str(event.value)
+        if value in self.VM_TYPE_OPTIONS:
+            self.app._vm_type_selected = value
+
+
 class WindowControls(Horizontal):
     DEFAULT_CSS = """
     WindowControls {
@@ -216,6 +298,7 @@ class WindowControls(Horizontal):
 
     def compose(self) -> ComposeResult:
         yield Static("", classes="window-controls-spacer")
+        yield SystemEnvironmentDropdown()
         yield BackBar()
         yield RefreshBar()
         yield ExitBar()
@@ -624,16 +707,21 @@ class FunctionModal(ModalScreen):
 
 class InstanceInfoPanel(Horizontal):
     DEFAULT_CSS = """
-InstanceInfoPanel > Horizontal {
-    height: 10;
-}
 InstanceInfoPanel {
-max-height: 70%;}
+    height: 8;
+    max-height: 60%;
+    margin: 1 0 0 0;
+}
 
 InstanceInfoPanel .box {
     height: 1fr;
     width: 1fr;
     layout: vertical;
+    margin: 0 1 0 0;
+}
+
+InstanceInfoPanel .box:last-child {
+    margin: 0;
 }
 
 InstanceInfoPanel .box > ListView {
@@ -895,7 +983,8 @@ class CurrentStateWidgetTemplate(Static):
         border: round #0f766e;
         border-title-align: center;
         border-title-color: #0f766e;
-        content-align: center middle;
+        content-align: left top;
+        padding: 0 1;
     }
 
     ListView {
@@ -1378,10 +1467,11 @@ class HomeTabbedScreen(Screen):
     CSS = """
     #home-topbar {
         width: 1fr;
-        height: 3;
-        min-height: 3;
-        max-height: 3;
+        height: 4;
+        min-height: 4;
+        max-height: 4;
         align: left middle;
+        margin: 0 0 1 0;
     }
     #home-tabs-nav {
         width: 1fr;
@@ -1411,9 +1501,10 @@ class HomeTabbedScreen(Screen):
     }
     #home-controls {
         width: auto;
-        height: 3;
+        height: 4;
         layout: horizontal;
         align: right middle;
+        padding-right: 1;
     }
     #home-switcher {
         height: 1fr;
@@ -1487,6 +1578,7 @@ class HomeTabbedScreen(Screen):
             )
             with Horizontal(id="home-controls"):
                 yield CreateMenuButton()
+                yield SystemEnvironmentDropdown()
                 yield BackBar()
                 yield RefreshBar()
                 yield ExitBar()
