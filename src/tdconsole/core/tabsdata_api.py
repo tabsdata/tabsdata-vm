@@ -8,7 +8,17 @@ from tdconsole.core.subprocess_runner import run_bash
 
 
 def initialize_tabsdata_server_connection(app):
+    """
+    Build a TabsdataServer client and attempt login.
+
+    Returns:
+        dict with keys:
+            - server: TabsdataServer | None
+            - login_success: bool | None
+              (None when no server/instance is available)
+    """
     instance = app.working_instance
+    login_success = None
     try:
         if instance is not None:
             socket = instance.ext_socket
@@ -26,10 +36,10 @@ def initialize_tabsdata_server_connection(app):
             run_bash(
                 f"td login --server {socket} --user {username} --role {role} --password {password}"
             )
-            app.notify("Login Successful")
+            login_success = True
         except:
-            app.notify("Login Failed")
-    return server
+            login_success = False
+    return {"server": server, "login_success": login_success}
 
 
 def pull_all_collections(app):

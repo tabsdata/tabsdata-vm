@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import sessionmaker
 
 from tdconsole.core.find_instances import sync_filesystem_instances_to_db
@@ -54,6 +55,37 @@ def _ensure_sqlite_dir(db_url: str) -> None:
         raise PermissionError(f"Directory not writable: {db_path.parent}")
 
 
+def _ensure_schema_compat(engine) -> None:
+    """
+    Apply lightweight schema upgrades for SQLite without external migrations.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = sqlalchemy_inspect(engine)
+    if "instances" not in inspector.get_table_names():
+        return
+
+    existing_columns = {col["name"] for col in inspector.get_columns("instances")}
+    alter_statements: list[str] = []
+
+    if "https_cert_path" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE instances ADD COLUMN https_cert_path VARCHAR"
+        )
+    if "https_cert_mode" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE instances ADD COLUMN https_cert_mode VARCHAR"
+        )
+
+    if not alter_statements:
+        return
+
+    with engine.begin() as conn:
+        for statement in alter_statements:
+            conn.exec_driver_sql(statement)
+
+
 def start_session(db_url: str | None = None):
     url = _resolve_db_url(db_url)
     try:
@@ -68,6 +100,7 @@ def start_session(db_url: str | None = None):
     SessionLocal = sessionmaker(bind=engine, future=True)
     session = SessionLocal()
     Base.metadata.create_all(engine)
+    _ensure_schema_compat(engine)
     sync_filesystem_instances_to_db(session=session)
     # Base.metadata.drop_all(engine)
     # Base.metadata.create_all(engine)

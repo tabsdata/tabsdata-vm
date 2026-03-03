@@ -1,19 +1,19 @@
+import asyncio
+
 import sqlalchemy
 import textual
 from rich.traceback import install
 from sqlalchemy import inspect
-from textual import on
+from textual import on, work
 from textual.app import App
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, ListView
+from textual.worker import Worker, WorkerState
 
 from tdconsole.core import tabsdata_api
 from tdconsole.core.db import start_session
 from tdconsole.core.find_instances import query_session, resolve_working_instance
-from tdconsole.core.find_instances import (
-    sync_filesystem_instances_to_db as sync_filesystem_instances_to_db,
-)
 from tdconsole.core.models import get_model_by_tablename
 from tdconsole.textual_assets.api_processor import process_response
 
@@ -47,15 +47,16 @@ class NestedMenuApp(App):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._pending_tabsdata_connect = False
         self.session = start_session()[0]
         self.session.info["app"] = self
+        self.tabsdata_server = None
         self.working_instance = resolve_working_instance(app=self, session=self.session)
-        if not hasattr(self.app, "tabsdata_server"):
-            self.handle_tabsdata_server_connection()
 
     def on_mount(self) -> None:
         # start with a MainMenu instance
         process_response(self, "_mount")
+        self.handle_tabsdata_server_connection()
 
     def action_go_back(self):
         if len(self.screen_stack) > 2:
@@ -92,7 +93,61 @@ class NestedMenuApp(App):
             self.handle_tabsdata_server_connection()
 
     def handle_tabsdata_server_connection(self):
-        self.tabsdata_server = tabsdata_api.initialize_tabsdata_server_connection(self)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._pending_tabsdata_connect = True
+            return
+
+        self._pending_tabsdata_connect = False
+        self._connect_tabsdata_server_worker()
+
+    @work(
+        thread=True,
+        exclusive=True,
+        group="tabsdata-server-connection",
+        exit_on_error=False,
+    )
+    def _connect_tabsdata_server_worker(self):
+        return tabsdata_api.initialize_tabsdata_server_connection(self)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.group != "tabsdata-server-connection":
+            return
+
+        if event.state == WorkerState.SUCCESS:
+            payload = event.worker.result or {}
+            self.tabsdata_server = payload.get("server")
+            login_success = payload.get("login_success")
+            if login_success is True:
+                self.notify("Login Successful")
+            elif login_success is False:
+                self.notify("Login Failed", severity="error")
+            self._refresh_home_screen_data()
+        elif event.state == WorkerState.ERROR:
+            self.tabsdata_server = None
+            self.notify("Login Failed", severity="error")
+            self._refresh_home_screen_data()
+
+    def _refresh_home_screen_data(self) -> None:
+        for screen in reversed(self.screen_stack):
+            if screen.__class__.__name__ != "HomeTabbedScreen":
+                continue
+
+            try:
+                screen._queue_autocomplete_refresh(force=True)
+            except Exception:
+                pass
+
+            try:
+                from tdconsole.textual_assets.textual_screens import InstanceInfoPanel
+
+                panel = screen.query_one(InstanceInfoPanel)
+                panel.refresh_widget()
+            except Exception:
+                pass
+            break
+
 
     @on(ListView.Highlighted)
     async def on_select_highlighted(self, event: ListView.Highlighted):

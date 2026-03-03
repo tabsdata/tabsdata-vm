@@ -11,6 +11,16 @@ from tdconsole.core.yaml_getter_setter import (
     get_yaml_value,
 )
 
+REMOTE_INSTANCE_PREFIX = "remote@"
+
+
+def is_remote_instance_name(name: str | None) -> bool:
+    return bool(name) and str(name).startswith(REMOTE_INSTANCE_PREFIX)
+
+
+def make_remote_instance_name(host: str, port: str | int) -> str:
+    return f"{REMOTE_INSTANCE_PREFIX}{host}:{port}"
+
 
 def define_root(*parts):
     root = Path.home() / ".tabsdata"
@@ -121,6 +131,23 @@ def instance_name_to_instance(instance_name: str) -> Instance:
     Does NOT interact with the database.
     """
     available_instances = find_tabsdata_instance_names()
+    if is_remote_instance_name(instance_name):
+        remote_target = instance_name.removeprefix(REMOTE_INSTANCE_PREFIX)
+        host = remote_target
+        port = "2457"
+        if ":" in remote_target:
+            host, port = remote_target.rsplit(":", 1)
+        return Instance(
+            name=instance_name,
+            status="Remote",
+            cfg_ext=port,
+            cfg_int="2458",
+            arg_ext=port,
+            arg_int="2458",
+            public_ip=host,
+            private_ip=host,
+        )
+
     if instance_name not in available_instances and instance_name == "_Create_Instance":
         return Instance(
             name=instance_name,
@@ -179,6 +206,10 @@ def resolve_working_instance(app=None, session=None):
         working_instance = current_working_instance
     elif session.query(Instance).filter_by(working=True, status="Running").first():
         working_instance = session.query(Instance).filter_by(working=True).first()
+    elif session.query(Instance).filter_by(working=True, status="Remote").first():
+        working_instance = (
+            session.query(Instance).filter_by(working=True, status="Remote").first()
+        )
     else:
         working_instance = None
     return working_instance
@@ -215,11 +246,18 @@ def sync_filesystem_instances_to_db(app=None, session=None) -> list[Instance]:
             # Create if not found
             session.add(fs_instance)
         else:
+            # Preserve UI-managed settings that are not discoverable from filesystem state.
+            fs_instance.use_https = db_instance.use_https
+            fs_instance.https_cert_path = getattr(db_instance, "https_cert_path", None)
+            fs_instance.https_cert_mode = getattr(db_instance, "https_cert_mode", None)
             session.merge(fs_instance)
 
-    session.query(Instance).filter(~Instance.name.in_(instance_names)).delete(
-        synchronize_session=False
+    # Keep remote instances that are not represented on the local filesystem.
+    missing_local_instances = session.query(Instance).filter(
+        ~Instance.name.in_(instance_names),
+        ~Instance.name.like(f"{REMOTE_INSTANCE_PREFIX}%"),
     )
+    missing_local_instances.delete(synchronize_session=False)
     if hasattr(app, "working_instance"):
         working_instance = app.working_instance
         if hasattr(working_instance, "name"):
@@ -227,7 +265,7 @@ def sync_filesystem_instances_to_db(app=None, session=None) -> list[Instance]:
             db_instance = (
                 session.query(Instance).filter_by(name=working_instance_name).first()
             )
-            if db_instance.status == "Not Running":
+            if db_instance is None or db_instance.status == "Not Running":
                 app.working_instance = None
 
     session.commit()

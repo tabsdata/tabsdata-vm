@@ -20,6 +20,8 @@ class Instance(Base):
     private_ip = Column(String, nullable=True, default="127.0.0.1")
     public_ip = Column(String, nullable=True, default="127.0.0.1")
     use_https = Column(Boolean, nullable=True, default=False)
+    https_cert_path = Column(String, nullable=True, default=None)
+    https_cert_mode = Column(String, nullable=True, default=None)
 
     collections = relationship(
         "Collection",
@@ -42,6 +44,10 @@ class Instance(Base):
     @int_socket.expression
     def int_socket(cls):
         return cls.private_ip + ":" + cls.arg_int.cast(String)
+
+    @property
+    def is_remote(self) -> bool:
+        return self.status == "Remote" or str(self.name).startswith("remote@")
 
 
 class Collection(Base):
